@@ -666,6 +666,250 @@ export function createWorkbench(home: string) {
       );
     }
   }
+  async function freeze(taskId: string, attempt: AttemptRow): Promise<void> {
+    const task = getTask(taskId),
+      repo = getRepo(task.repo_id),
+      spec = record(task.spec_json),
+      policy = getPolicy(repo),
+      scope = object(spec.scope),
+      row = db
+        .prepare("SELECT * FROM workspaces WHERE id=?")
+        .get(attempt.workspace_id) as WorkspaceRow;
+    const output = object(
+      unwrap(
+        validateContract(
+          "implementation-output",
+          decode(
+            readFileSync(
+              join(home, "workers", attempt.id, "output.json"),
+              "utf8",
+            ),
+          ),
+        ),
+      ),
+    );
+    mark(
+      output.declaredOutcome === "ready_for_verification",
+      "OUTPUT_INVALID",
+      "実装完了の出力がありません",
+    );
+    transition(taskId, "IMPLEMENTATION_RETURNED", {
+      executionCompleted: true,
+      outputValid: true,
+      completionDeclared: true,
+    });
+    const snapshot = unwrap(
+      await git
+        .forRepository(repo.id)
+        .freezeSnapshot(workRecord(row), row.base_sha, {
+          writerStopped: true,
+          scope: {
+            allow: strings(scope.allowedPaths),
+            deny: strings(scope.forbiddenPaths),
+          },
+          candidateRef: `refs/aw/candidates/${taskId}/${task.generation}`,
+          specDigest: task.spec_digest,
+          driver: "fake",
+        }),
+    );
+    const plan = object(
+      unwrap(
+        buildCheckPlan(
+          spec,
+          policy,
+          snapshot.manifest.files.map((file) => file.path),
+        ),
+      ),
+    );
+    const planDigest = configVersion("check_plan", plan, true),
+      manifest = await saveArtifact(snapshot.manifest as unknown as Json),
+      cid = id("cand");
+    const sourceContext = await contextFor(task, row.base_sha);
+    const identity = {
+      schemaVersion: 1,
+      repoId: repo.id,
+      taskId,
+      generation: task.generation,
+      sourceBaseSha: repo.source_base_sha,
+      integrationBaseSha: row.base_sha,
+      candidateSha: snapshot.commit,
+      candidateTreeSha: snapshot.tree,
+      specDigest: task.spec_digest,
+      policyDigest: task.policy_digest,
+      checkPlanDigest: planDigest,
+      instructionsDigest: sourceContext.instructionsDigest,
+      contextDigest: sourceContext.contextDigest,
+      environmentDigest: digest(environment(task)),
+    };
+    unwrap(validateContract("candidate-identity", identity));
+    db.prepare(
+      "INSERT INTO candidates(id,task_id,generation,identity_json,identity_digest,base_sha,candidate_sha,tree_sha,check_plan_digest,manifest_digest,state,created_at_ms) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
+    ).run(
+      cid,
+      taskId,
+      task.generation,
+      canonical(identity),
+      digest(identity),
+      row.base_sha,
+      snapshot.commit,
+      snapshot.tree,
+      planDigest,
+      manifest.digest,
+      "frozen",
+      Date.now(),
+    );
+    db.prepare("UPDATE tasks SET active_candidate_id=? WHERE id=?").run(
+      cid,
+      taskId,
+    );
+    db.prepare("UPDATE workspaces SET state='frozen' WHERE id=?").run(row.id);
+    transition(
+      taskId,
+      "CANDIDATE_FROZEN",
+      {
+        writerQuiescent: true,
+        scopeValid: true,
+        snapshotPersisted: true,
+        manifestPersisted: true,
+      },
+      { candidateId: cid },
+    );
+    await verify(taskId, false);
+    if (getTask(taskId).state === "reviewing") await review(taskId, false);
+  }
+  async function verify(taskId: string, rerun: boolean): Promise<Json> {
+    const task = getTask(taskId),
+      repo = getRepo(task.repo_id),
+      candidate = getCandidate(task);
+    mark(
+      [
+        "verifying",
+        "reviewing",
+        "awaiting_approval",
+        "changes_required",
+      ].includes(task.state),
+      "INVALID_TRANSITION",
+      "この状態ではcheckできません",
+    );
+    mark(
+      knownFixture(repo),
+      "SANDBOX_UNVERIFIED",
+      "実check runnerにはsandbox検証が必要です",
+    );
+    if (rerun) {
+      invalidate(taskId);
+      db.prepare("UPDATE tasks SET state='verifying' WHERE id=?").run(taskId);
+    }
+    const stored = db
+      .prepare("SELECT json FROM config_versions WHERE digest=?")
+      .get(candidate.check_plan_digest) as { json: string };
+    const plan = record(stored.json),
+      checks = list(plan.checks).map(object);
+    let allPassed = true;
+    const { fixtureCheckRunner } = await import(
+      "../adapters/fake/check-runner.js"
+    );
+    const runner = fixtureCheckRunner(home, artifacts);
+    for (const check of checks) {
+      const key = text(check.id);
+      const previous = db
+        .prepare(
+          "SELECT state FROM checks WHERE candidate_id=? AND check_key=? ORDER BY execution_number DESC LIMIT 1",
+        )
+        .get(candidate.id, key) as { state: string } | undefined;
+      if (previous && !rerun) {
+        allPassed &&= previous.state === "passed";
+        continue;
+      }
+      const numberRow = db
+        .prepare(
+          "SELECT coalesce(max(execution_number),0)+1 AS n FROM checks WHERE candidate_id=? AND check_key=?",
+        )
+        .get(candidate.id, key) as { n: number };
+      const checkId = id("chk"),
+        attemptId = id("run"),
+        row = await workspace(task, "check", candidate.candidate_sha);
+      const argv = strings(check.argv);
+      argv[0] = executable(argv[0]!);
+      db.prepare(
+        "INSERT INTO checks(id,candidate_id,check_key,execution_number,state,required,command_digest,environment_digest,started_at_ms) VALUES(?,?,?,?,?,?,?,?,?)",
+      ).run(
+        checkId,
+        candidate.id,
+        key,
+        numberRow.n,
+        "running",
+        1,
+        digest(check),
+        digest(environment(task)),
+        Date.now(),
+      );
+      const request = {
+        attemptId,
+        candidateIdentityDigest: candidate.identity_digest,
+        checkId: key,
+        cwd: row.path,
+        argv,
+        environment: {},
+        timeoutMs: number(check.timeoutSeconds) * 1000,
+        maxOutputBytes: number(check.maxOutputBytes),
+        expectedArtifactPaths: strings(check.expectedArtifacts),
+        network: "deny" as const,
+        allowHosts: [],
+      };
+      const observed = await runner.execute(
+        request,
+        new AbortController().signal,
+      );
+      if (!observed.ok) {
+        db.prepare(
+          "UPDATE checks SET state='failed',ended_at_ms=? WHERE id=?",
+        ).run(Date.now(), checkId);
+        allPassed = false;
+        await saveArtifact({ ...observed.error });
+        continue;
+      }
+      const result = observed.value,
+        passed =
+          result.exitCode === 0 &&
+          result.signal === null &&
+          !result.timedOut &&
+          result.sourceUnchanged &&
+          request.expectedArtifactPaths.length === 0;
+      const artifact = await saveArtifact(result as unknown as Json);
+      db.prepare(
+        "UPDATE checks SET state=?,exit_code=?,signal=?,timed_out=?,output_digest=?,result_digest=?,ended_at_ms=? WHERE id=?",
+      ).run(
+        passed ? "passed" : result.timedOut ? "timed_out" : "failed",
+        result.exitCode,
+        result.signal,
+        result.timedOut ? 1 : 0,
+        result.output.digest,
+        artifact.digest,
+        Date.now(),
+        checkId,
+      );
+      allPassed &&= passed;
+    }
+    if (getTask(taskId).state === "verifying")
+      transition(
+        taskId,
+        allPassed ? "CHECKS_PASSED" : "CHECKS_FAILED",
+        allPassed
+          ? {
+              checksPassed: true,
+              sameCandidate: true,
+              outputsPresent: true,
+              sourceUnchanged: true,
+            }
+          : { checkFailureObserved: true },
+      );
+    event(taskId, "CHECK_EVIDENCE_RECORDED", {
+      candidateId: candidate.id,
+      passed: allPassed,
+    });
+    return { candidateId: candidate.id, passed: allPassed };
+  }
   async function finishWorker(attempt: AttemptRow): Promise<boolean> {
     await readSpool(attempt);
     const identity = attempt.process_identity_json
@@ -1134,4 +1378,5 @@ throw {
   };
   async function gateFor(_taskId:string):Promise<ReturnType<typeof evaluateGate>> {throw {code:'UNSUPPORTED_OPERATION',message:'gateは後続の接続段で追加します'};}
   async function reconcile():Promise<void> {throw {code:'UNSUPPORTED_OPERATION',message:'復旧は後続の接続段で追加します'};}
+  async function review(_taskId:string,_rerun:boolean):Promise<Json> {throw {code:'UNSUPPORTED_OPERATION',message:'reviewは後続の接続段で追加します'};}
 }
