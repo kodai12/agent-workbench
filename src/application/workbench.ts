@@ -192,6 +192,7 @@ export function createWorkbench(home: string) {
   const processes = new Map<string, ChildProcess>(),
     locks = new Map<string, Promise<void>>();
   let reconciling = false;
+  // ponytail: 更新と復旧を同じ単一queueで直列化し、backup中のGit変更も止める。
   const acquireMutation = async (): Promise<() => void> => {
     const prior = locks.get("mutations") ?? Promise.resolve();
     let release!: () => void;
@@ -393,6 +394,7 @@ export function createWorkbench(home: string) {
       simulated: knownFixture(getRepo(task.repo_id)),
     };
   };
+
   function validateTaskInput(
     repo: RepoRow,
     spec: ObjectValue,
@@ -1335,15 +1337,20 @@ export function createWorkbench(home: string) {
     };
     return evaluateGate(input);
   }
-  async function dispatchBody(method:string,p:ObjectValue,actor:Actor,commandId:string):Promise<Json> {
-const config = readConfig(home),
+  async function dispatchBody(
+    method: string,
+    p: ObjectValue,
+    actor: Actor,
+    commandId: string,
+  ): Promise<Json> {
+    const config = readConfig(home),
       boards = createBoardService(store, artifacts, config),
       handoffs = createHandoffService(store, artifacts, config);
-if (method === "repo.list")
+    if (method === "repo.list")
       return db
         .prepare("SELECT * FROM repositories ORDER BY name")
         .all() as Json;
-if (method === "repo.get") {
+    if (method === "repo.get") {
       const repo = getRepo(text(p.repoId));
       const policy = db
         .prepare(
@@ -1359,7 +1366,7 @@ if (method === "repo.get") {
         policyTrusted: policy.trusted_at_ms !== null,
       };
     }
-if (method === "repo.add") {
+    if (method === "repo.add") {
       const repoId = id("rep"),
         imported = unwrap(
           await git.importRepository(
@@ -1389,11 +1396,11 @@ if (method === "repo.add") {
       );
       return getRepo(repoId) as unknown as Json;
     }
-if (method === "repo.syncPlan") {
+    if (method === "repo.syncPlan") {
       const repo = getRepo(text(p.repoId));
       return unwrap(await git.planSourceSync(repo.id)) as unknown as Json;
     }
-if (method === "profiles.configure") {
+    if (method === "profiles.configure") {
       for (const [name, value] of Object.entries(object(p.profiles)))
         unwrap(validateContract("model-profile", value));
       const profiles = { ...config.profiles, ...object(p.profiles) };
@@ -1406,7 +1413,7 @@ if (method === "profiles.configure") {
       saveConfig(home, { ...config, profiles });
       return { profiles: Object.keys(profiles) };
     }
-if (method === "policy.import") {
+    if (method === "policy.import") {
       const repo = getRepo(text(p.repoId)),
         policy = unwrap(validateContract("project-policy", p.policy));
       const d = configVersion("policy", policy);
@@ -1418,7 +1425,7 @@ if (method === "policy.import") {
       });
       return { repoId: repo.id, policyDigest: d, trusted: false };
     }
-if (method === "policy.trust") {
+    if (method === "policy.trust") {
       const repo = getRepo(text(p.repoId));
       mark(
         text(p.expectDigest) === repo.policy_digest,
@@ -1438,14 +1445,14 @@ if (method === "policy.trust") {
         trusted: true,
       };
     }
-if (method === "system.doctor")
+    if (method === "system.doctor")
       return {
         node: process.version,
         simulated: config.devFixtures,
         strictSandboxVerified: false,
         liveVerified: false,
       };
-if (method === "task.logs") {
+    if (method === "task.logs") {
       const task = getTask(text(p.taskId));
       const after = p.afterSeq === undefined ? 0 : number(p.afterSeq);
       mark(
@@ -1459,11 +1466,11 @@ if (method === "task.logs") {
         )
         .all(task.id, after) as Json;
     }
-if (method === "task.list")
+    if (method === "task.list")
       return db
         .prepare("SELECT * FROM tasks ORDER BY created_at_ms")
         .all() as Json;
-if (method === "task.get") {
+    if (method === "task.get") {
       const task = getTask(text(p.taskId));
       const candidate = task.active_candidate_id ? getCandidate(task) : null;
       return {
@@ -1479,7 +1486,7 @@ if (method === "task.get") {
                 : null,
       };
     }
-if (method === "task.create") {
+    if (method === "task.create") {
       const repo = getRepo(text(p.repoId)),
         spec = object(unwrap(validateContract("task-spec", p.spec)));
       validateTaskInput(repo, spec);
@@ -1516,7 +1523,7 @@ if (method === "task.create") {
       });
       return getTask(tid) as unknown as Json;
     }
-if (method === "task.start") {
+    if (method === "task.start") {
       const task = getTask(text(p.taskId)),
         repo = getRepo(task.repo_id),
         policy = getPolicy(repo),
@@ -1607,7 +1614,22 @@ if (method === "task.start") {
         state: "allocating",
       };
     }
-if (method === "task.cancel") {
+    if (method === "task.verify")
+      return verify(text(p.taskId), p.rerun === true);
+    if (method === "task.review")
+      return review(text(p.taskId), p.rerun === true);
+    if (method === "task.finish")
+      throw {
+        code: "WRITER_NOT_QUIESCENT",
+        message: "native writerのforegroundと子process終了を確認できません",
+      };
+    if (method === "task.send")
+      throw {
+        code: "UNSUPPORTED_OPERATION",
+        message:
+          "fakeはdeterministic fixtureです。実providerへの送信は未許可です",
+      };
+    if (method === "task.cancel") {
       const task = getTask(text(p.taskId));
       const active = db
         .prepare(
@@ -1640,7 +1662,7 @@ if (method === "task.cancel") {
       invalidate(task.id);
       return getTask(task.id) as unknown as Json;
     }
-if (method === "task.revise") {
+    if (method === "task.revise") {
       const task = getTask(text(p.taskId));
       mark(
         task.state === "changes_required",
@@ -1681,7 +1703,7 @@ if (method === "task.revise") {
       });
       return getTask(task.id) as unknown as Json;
     }
-if (method === "task.recover") {
+    if (method === "task.recover") {
       const task = getTask(text(p.taskId)),
         attempts = db
           .prepare(
@@ -1731,7 +1753,7 @@ if (method === "task.recover") {
       });
       return getTask(task.id) as unknown as Json;
     }
-if (method === "approval.request") {
+    if (method === "approval.request") {
       const task = getTask(text(p.taskId)),
         repo = getRepo(task.repo_id),
         candidate = getCandidate(task),
@@ -1788,7 +1810,7 @@ if (method === "approval.request") {
         gate: gate as unknown as Json,
       };
     }
-if (method.startsWith("approval.")) {
+    if (method.startsWith("approval.")) {
       mark(
         (typeof p.requestId === "string") !==
           (typeof p.approvalId === "string"),
@@ -1886,9 +1908,9 @@ if (method.startsWith("approval.")) {
       });
       return { approvalId, requestId: request.id, state: "granted" };
     }
-if (method === "task.integrate")
+    if (method === "task.integrate")
       return integrate(text(p.taskId), text(p.approvalId), actor, commandId);
-if (method === "task.export") {
+    if (method === "task.export") {
       const task = getTask(text(p.taskId)),
         candidate = getCandidate(task);
       mark(
@@ -1907,20 +1929,20 @@ if (method === "task.export") {
           ),
       ) as unknown as Json;
     }
-if (method === "findings.list")
+    if (method === "findings.list")
       return db
         .prepare(
           "SELECT * FROM findings WHERE review_id IN (SELECT id FROM reviews WHERE candidate_id=?)",
         )
         .all(text(p.candidateId)) as Json;
-if (method === "findings.get") {
+    if (method === "findings.get") {
       const value = db
         .prepare("SELECT * FROM findings WHERE id=?")
         .get(text(p.findingId));
       mark(!!value, "NOT_FOUND", "findingがありません");
       return value as Json;
     }
-if (method === "finding.disposition") {
+    if (method === "finding.disposition") {
       const finding = db
         .prepare(
           "SELECT f.*,r.candidate_id,c.task_id FROM findings f JOIN reviews r ON r.id=f.review_id JOIN candidates c ON c.id=r.candidate_id WHERE f.id=?",
@@ -1983,11 +2005,45 @@ if (method === "finding.disposition") {
       );
       return { findingId: finding!.id, state };
     }
-throw {
+    if (method === "board.create")
+      return unwrap(
+        await boards.create(
+          p.charter ?? null,
+          typeof p.repoId === "string" ? p.repoId : undefined,
+        ),
+      );
+    if (method === "board.start")
+      return unwrap(await boards.start(text(p.boardId)));
+    if (method === "board.get")
+      return unwrap(await boards.get(text(p.boardId)));
+    if (method === "board.memo")
+      return unwrap(await boards.memo(text(p.boardId)));
+    if (method === "board.cancel")
+      return unwrap(await boards.cancel(text(p.boardId)));
+    if (method === "handoff.create")
+      return unwrap(await handoffs.create(text(p.taskId), text(p.goal)));
+    if (method === "history.query")
+      return unwrap(
+        await handoffs.query(
+          text(p.taskId),
+          text(p.question),
+          typeof p.scope === "string" ? p.scope : "same-task",
+        ),
+      );
+    if (method === "backup.create")
+      return unwrap(
+        await backupStore(store, text(p.destination)),
+      ) as unknown as Json;
+    if (method === "gc.plan")
+      return {
+        workspaces: planWorkspaceGc(store, []),
+        objects: unwrap(await planObjectGc(store, [])),
+      } as unknown as Json;
+    throw {
       code: "UNSUPPORTED_OPERATION",
       message: "未対応のmethodです: " + method,
     };
-}
+  }
   function invalidateRepo(repoId: string): void {
     for (const task of db
       .prepare("SELECT id,state FROM tasks WHERE repo_id=?")
@@ -2395,6 +2451,7 @@ throw {
       release();
     }
   }
+  // 再起動時に失われたJSの継続処理を推測して再実行しない。
   for (const task of db
     .prepare(
       "SELECT * FROM tasks WHERE state IN ('allocating','running','waiting_human','freezing','verifying','reviewing','integrating')",
