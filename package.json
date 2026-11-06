@@ -1,0 +1,21 @@
+{
+  "name": "agent-workbench",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "license": "MIT",
+  "packageManager": "pnpm@12.14.0",
+  "engines": { "node": ">=24.0.0" },
+  "bin": { "aw": "dist/src/cli/main.js" },
+  "scripts": {
+    "build": "tsc -p tsconfig.json && node scripts/copy-assets.mjs",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "pnpm build && node scripts/test-runner.mjs unit integration",
+    "test:contract": "pnpm build && node scripts/test-runner.mjs contract",
+    "test:chaos": "pnpm build && node scripts/test-runner.mjs chaos",
+    "test:live": "pnpm build && node scripts/test-runner.mjs e2e",
+    "verify": "pnpm typecheck && pnpm test && pnpm test:contract && pnpm test:chaos"
+  },
+  "dependencies": { "ajv": "8.20.0", "better-sqlite3": "13.0.3" },
+  "devDependencies": { "@types/node": "24.19.2", "@types/better-sqlite3": "7.6.13", "typescript": "7.0.2", "fast-check": "4.3.0" }
+}

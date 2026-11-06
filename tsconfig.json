@@ -1,0 +1,10 @@
+{
+  "compilerOptions": {
+    "target": "ES2023", "module": "NodeNext", "moduleResolution": "NodeNext",
+    "strict": true, "noUncheckedIndexedAccess": true, "exactOptionalPropertyTypes": true,
+    "useUnknownInCatchVariables": true, "forceConsistentCasingInFileNames": true,
+    "declaration": true, "rootDir": ".", "outDir": "dist", "types": ["node"]
+  },
+  "include": ["src/**/*.ts", "test/**/*.ts", "contracts/**/*.ts"],
+  "exclude": ["dist", "node_modules"]
+}
