@@ -1,0 +1,65 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://agent-workbench.invalid/contracts/approval-binding.schema.json",
+  "type": "object",
+  "properties": {
+    "schemaVersion": {
+      "const": 1
+    },
+    "action": {
+      "type": "string",
+      "enum": [
+        "integrate",
+        "publish",
+        "risk_accept"
+      ]
+    },
+    "repoId": {
+      "type": "string",
+      "pattern": "^[a-z]+_[0-9a-f]{32}$"
+    },
+    "taskId": {
+      "type": "string",
+      "pattern": "^[a-z]+_[0-9a-f]{32}$"
+    },
+    "candidateIdentityDigest": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "evidenceDigest": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "targetRef": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 300
+    },
+    "expectedBaseSha": {
+      "type": "string",
+      "pattern": "^(?:[0-9a-f]{40}|[0-9a-f]{64})$"
+    },
+    "expiresAtMs": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 9007199254740991
+    },
+    "nonce": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    }
+  },
+  "required": [
+    "schemaVersion",
+    "action",
+    "repoId",
+    "taskId",
+    "candidateIdentityDigest",
+    "evidenceDigest",
+    "targetRef",
+    "expectedBaseSha",
+    "expiresAtMs",
+    "nonce"
+  ],
+  "additionalProperties": false
+}

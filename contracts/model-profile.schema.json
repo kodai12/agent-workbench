@@ -1,0 +1,69 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://agent-workbench.invalid/contracts/model-profile.schema.json",
+  "type": "object",
+  "properties": {
+    "driver": {
+      "type": "string",
+      "enum": [
+        "codex-app-server",
+        "gemini-api",
+        "fake"
+      ]
+    },
+    "providerId": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 80
+    },
+    "trainingFamily": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 80
+    },
+    "modelId": {
+      "anyOf": [
+        {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 200
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "reasoningEffort": {
+      "anyOf": [
+        {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 40
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "maxOutputTokens": {
+      "type": "integer",
+      "minimum": 256,
+      "maximum": 1000000
+    },
+    "contextBytesLimit": {
+      "type": "integer",
+      "minimum": 4096,
+      "maximum": 8000000
+    }
+  },
+  "required": [
+    "driver",
+    "providerId",
+    "trainingFamily",
+    "modelId",
+    "reasoningEffort",
+    "maxOutputTokens",
+    "contextBytesLimit"
+  ],
+  "additionalProperties": false
+}
