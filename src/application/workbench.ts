@@ -1516,6 +1516,258 @@ if (method === "task.create") {
       });
       return getTask(tid) as unknown as Json;
     }
+if (method === "approval.request") {
+      const task = getTask(text(p.taskId)),
+        repo = getRepo(task.repo_id),
+        candidate = getCandidate(task),
+        policy = getPolicy(repo);
+      mark(
+        task.state === "awaiting_approval",
+        "INVALID_TRANSITION",
+        "承認待ち状態ではありません",
+      );
+      mark(
+        p.action === "integrate",
+        "UNSUPPORTED_OPERATION",
+        "初版はintegrate承認のみ対応します",
+      );
+      const gate = await gateFor(task.id);
+      mark(gate.passed, "GATE_BLOCKED", "必要な証拠が揃っていません");
+      const binding: ApprovalBinding = {
+        schemaVersion: 1,
+        action: "integrate",
+        repoId: repo.id,
+        taskId: task.id,
+        candidateIdentityDigest: candidate.identity_digest,
+        evidenceDigest: gate.evidenceDigest,
+        targetRef: repo.integration_ref,
+        expectedBaseSha: repo.integration_sha,
+        expiresAtMs:
+          Date.now() +
+          number(object(policy.integration).approvalTtlSeconds) * 1000,
+        nonce: randomBytes(32).toString("hex"),
+      };
+      unwrap(validateContract("approval-binding", binding));
+      const requestId = id("apr"),
+        hash = digest(binding);
+      db.prepare(
+        "INSERT INTO approval_requests(id,task_id,candidate_id,action,binding_json,binding_digest,evidence_digest,nonce,expires_at_ms,state,created_at_ms) VALUES(?,?,?,?,?,?,?,?,?,?,?)",
+      ).run(
+        requestId,
+        task.id,
+        candidate.id,
+        "integrate",
+        canonical(binding),
+        hash,
+        gate.evidenceDigest,
+        binding.nonce,
+        binding.expiresAtMs,
+        "pending",
+        Date.now(),
+      );
+      return {
+        requestId,
+        bindingDigest: hash,
+        binding: { ...binding },
+        simulated: knownFixture(repo),
+        gate: gate as unknown as Json,
+      };
+    }
+if (method.startsWith("approval.")) {
+      mark(
+        (typeof p.requestId === "string") !==
+          (typeof p.approvalId === "string"),
+        "INVALID_INPUT",
+        "requestIdかapprovalIdを一つ指定してください",
+      );
+      const row = (
+        typeof p.approvalId === "string"
+          ? db
+              .prepare(
+                "SELECT r.*,a.id AS approvalId FROM approval_requests r JOIN approvals a ON a.request_id=r.id WHERE a.id=?",
+              )
+              .get(p.approvalId)
+          : db
+              .prepare("SELECT * FROM approval_requests WHERE id=?")
+              .get(text(p.requestId))
+      ) as
+        | {
+            id: string;
+            task_id: string;
+            binding_json: string;
+            binding_digest: Digest;
+            state: string;
+            expires_at_ms: number;
+          }
+        | undefined;
+      mark(!!row, "NOT_FOUND", "承認要求がありません");
+      const request = row!;
+      if (method === "approval.get")
+        return { ...request, binding: decode(request.binding_json) };
+      mark(
+        text(p.expectDigest) === request.binding_digest,
+        "APPROVAL_STALE",
+        "承認digestが一致しません",
+      );
+      mark(
+        request.state === "pending",
+        "APPROVAL_STALE",
+        "承認は未決ではありません",
+      );
+      mark(
+        Date.now() < request.expires_at_ms,
+        "APPROVAL_EXPIRED",
+        "承認期限が切れました",
+      );
+      const binding = decode(
+        request.binding_json,
+      ) as unknown as ApprovalBinding;
+      const gate = await gateFor(request.task_id);
+      unwrap(
+        validateApproval(binding, {
+          actor,
+          bindingDigest: request.binding_digest,
+          expected: binding,
+          nowMs: Date.now(),
+          usedNonces: new Set(),
+          revoked: false,
+          gate,
+        }),
+      );
+      if (method === "approval.deny") {
+        store.transact(() => {
+          db.prepare(
+            "UPDATE approval_requests SET state='denied' WHERE id=?",
+          ).run(request.id);
+          event(
+            request.task_id,
+            "APPROVAL_REVOKED",
+            { requestId: request.id },
+            actor,
+          );
+        });
+        return { requestId: request.id, state: "denied" };
+      }
+      const approvalId = id("apv");
+      store.transact(() => {
+        db.prepare(
+          "INSERT INTO approvals(id,request_id,human_actor_id,binding_digest,granted_at_ms) VALUES(?,?,?,?,?)",
+        ).run(
+          approvalId,
+          request.id,
+          actor.id,
+          request.binding_digest,
+          Date.now(),
+        );
+        db.prepare(
+          "UPDATE approval_requests SET state='granted' WHERE id=?",
+        ).run(request.id);
+        event(
+          request.task_id,
+          "APPROVAL_GRANTED",
+          { approvalId, requestId: request.id },
+          actor,
+        );
+      });
+      return { approvalId, requestId: request.id, state: "granted" };
+    }
+if (method === "task.integrate")
+      return integrate(text(p.taskId), text(p.approvalId), actor, commandId);
+if (method === "task.export") {
+      const task = getTask(text(p.taskId)),
+        candidate = getCandidate(task);
+      mark(
+        p.format === "git-bundle",
+        "UNSUPPORTED_OPERATION",
+        "git-bundleだけ対応します",
+      );
+      return unwrap(
+        await git
+          .forRepository(task.repo_id)
+          .exportBundle(
+            `refs/aw/candidates/${task.id}/${task.generation}`,
+            candidate.base_sha,
+            resolve(text(p.out)),
+            candidate.candidate_sha,
+          ),
+      ) as unknown as Json;
+    }
+if (method === "findings.list")
+      return db
+        .prepare(
+          "SELECT * FROM findings WHERE review_id IN (SELECT id FROM reviews WHERE candidate_id=?)",
+        )
+        .all(text(p.candidateId)) as Json;
+if (method === "findings.get") {
+      const value = db
+        .prepare("SELECT * FROM findings WHERE id=?")
+        .get(text(p.findingId));
+      mark(!!value, "NOT_FOUND", "findingがありません");
+      return value as Json;
+    }
+if (method === "finding.disposition") {
+      const finding = db
+        .prepare(
+          "SELECT f.*,r.candidate_id,c.task_id FROM findings f JOIN reviews r ON r.id=f.review_id JOIN candidates c ON c.id=r.candidate_id WHERE f.id=?",
+        )
+        .get(text(p.findingId)) as
+        | { id: string; severity: string; task_id: string }
+        | undefined;
+      mark(!!finding, "NOT_FOUND", "findingがありません");
+      const prior = db
+        .prepare(
+          "SELECT coalesce(max(disposition_version),0)+1 AS n FROM finding_dispositions WHERE finding_id=?",
+        )
+        .get(finding!.id) as { n: number };
+      const state = text(p.disposition);
+      mark(
+        ["open", "confirmed", "false_positive", "risk_accepted"].includes(
+          state,
+        ),
+        "INVALID_INPUT",
+        "処置が不正です",
+      );
+      const evidence = p.evidenceDigest
+        ? toDigest(text(p.evidenceDigest))
+        : null;
+      if (evidence) unwrap(await artifacts.readVerified(evidence));
+      const input: FindingDisposition = {
+        findingId: finding!.id,
+        version: prior.n,
+        state: state as FindingDisposition["state"],
+        actor,
+        independentReviewer: false,
+        reason: text(p.reason),
+        evidence: evidence ? [evidence] : [],
+      };
+      unwrap(
+        validateDisposition(input, finding!.task_id, finding!.severity, [
+          "medium",
+          "low",
+        ]),
+      );
+      invalidate(finding!.task_id);
+      db.prepare(
+        "INSERT INTO finding_dispositions(id,finding_id,disposition_version,disposition,reason,actor_kind,actor_id,evidence_digest,created_at_ms) VALUES(?,?,?,?,?,?,?,?,?)",
+      ).run(
+        id("dsp"),
+        finding!.id,
+        prior.n,
+        state,
+        p.reason,
+        actor.kind,
+        actor.id,
+        evidence,
+        Date.now(),
+      );
+      event(
+        finding!.task_id,
+        "FINDING_DISPOSITION_RECORDED",
+        { findingId: finding!.id, state },
+        actor,
+      );
+      return { findingId: finding!.id, state };
+    }
 throw {
       code: "UNSUPPORTED_OPERATION",
       message: "未対応のmethodです: " + method,
@@ -1532,6 +1784,145 @@ throw {
           invalidationObserved: true,
         });
     }
+  }
+  async function integrate(
+    taskId: string,
+    approvalId: string,
+    actor: Actor,
+    commandId: string,
+  ): Promise<Json> {
+    const task = getTask(taskId),
+      repo = getRepo(task.repo_id),
+      candidate = getCandidate(task),
+      gate = await gateFor(taskId);
+    const approval = db
+      .prepare(
+        "SELECT a.*,r.binding_json,r.state AS request_state FROM approvals a JOIN approval_requests r ON r.id=a.request_id WHERE a.id=?",
+      )
+      .get(approvalId) as
+      | {
+          id: string;
+          request_id: string;
+          binding_digest: Digest;
+          binding_json: string;
+          revoked_at_ms: number | null;
+          consumed_by_command_id: string | null;
+          request_state: string;
+        }
+      | undefined;
+    mark(!!approval, "APPROVAL_REQUIRED", "承認が必要です");
+    const approved = approval!,
+      binding = decode(approved.binding_json) as unknown as ApprovalBinding;
+    const expected: ApprovalBinding = {
+      ...binding,
+      repoId: repo.id,
+      taskId,
+      candidateIdentityDigest: candidate.identity_digest,
+      evidenceDigest: gate.evidenceDigest,
+      targetRef: repo.integration_ref,
+      expectedBaseSha: repo.integration_sha,
+    };
+    unwrap(
+      validateApproval(binding, {
+        actor,
+        bindingDigest: approved.binding_digest,
+        expected,
+        nowMs: Date.now(),
+        usedNonces: new Set(
+          approved.consumed_by_command_id ? [binding.nonce] : [],
+        ),
+        revoked:
+          approved.revoked_at_ms !== null ||
+          approved.request_state !== "granted",
+        gate,
+      }),
+    );
+    mark(
+      binding.expectedBaseSha ===
+        unwrap(await git.forRepository(repo.id).readRef(repo.integration_ref)),
+      "BASE_MOVED",
+      "管理refが移動しています",
+    );
+    const integrationId = id("int");
+    store.transact(() => {
+      db.prepare(
+        "INSERT INTO integrations(id,task_id,candidate_id,approval_id,command_id,target_ref,expected_old_sha,new_sha,state,created_at_ms) VALUES(?,?,?,?,?,?,?,?,?,?)",
+      ).run(
+        integrationId,
+        taskId,
+        candidate.id,
+        approved.id,
+        commandId,
+        repo.integration_ref,
+        binding.expectedBaseSha,
+        candidate.candidate_sha,
+        "prepared",
+        Date.now(),
+      );
+      db.prepare(
+        "UPDATE approvals SET consumed_by_command_id=? WHERE id=? AND consumed_by_command_id IS NULL",
+      ).run(commandId, approved.id);
+      transition(taskId, "INTEGRATION_AUTHORIZED", {
+        approvalValid: true,
+        bindingMatches: true,
+        baseMatches: true,
+        noActiveWriter: true,
+      });
+    });
+    const changed = await git
+      .forRepository(repo.id)
+      .compareAndSwapRef(
+        repo.integration_ref,
+        binding.expectedBaseSha,
+        candidate.candidate_sha,
+      );
+    if (!changed.ok) {
+      invalidate(taskId);
+      transition(taskId, "BASE_MOVED", { casFailed: true });
+      throw changed.error;
+    }
+    confirmIntegration(
+      integrationId,
+      taskId,
+      repo.id,
+      candidate.id,
+      approved.request_id,
+      candidate.candidate_sha,
+    );
+    return {
+      integrationId,
+      taskId,
+      state: "integrated",
+      targetRef: repo.integration_ref,
+      candidateSha: candidate.candidate_sha,
+    };
+  }
+  function confirmIntegration(
+    integrationId: string,
+    taskId: string,
+    repoId: string,
+    candidateId: string,
+    requestId: string,
+    sha: string,
+  ): void {
+    store.transact(() => {
+      db.prepare(
+        "UPDATE integrations SET state='applied',confirmed_at_ms=? WHERE id=?",
+      ).run(Date.now(), integrationId);
+      db.prepare(
+        "UPDATE approval_requests SET state='consumed' WHERE id=?",
+      ).run(requestId);
+      db.prepare(
+        "UPDATE repositories SET integration_sha=?,version=version+1 WHERE id=?",
+      ).run(sha, repoId);
+      db.prepare("UPDATE candidates SET state='integrated' WHERE id=?").run(
+        candidateId,
+      );
+      transition(taskId, "INTEGRATION_CONFIRMED", {
+        refMatchesCandidate: true,
+        journalConfirmed: true,
+      });
+    });
   }
   async function dispatch(
     request: CommandRequest,
