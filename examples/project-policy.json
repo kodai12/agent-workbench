@@ -1,0 +1,85 @@
+{
+  "schemaVersion": 1,
+  "sourceBaseRef": "refs/heads/main",
+  "defaultInteraction": "managed",
+  "presentation": "none",
+  "checks": [
+    {
+      "id": "unit",
+      "argv": [
+        "node",
+        "--test",
+        "test/add.test.js"
+      ],
+      "cwd": ".",
+      "required": true,
+      "timeoutSeconds": 30,
+      "maxOutputBytes": 1048576,
+      "env": {
+        "pass": [
+          "PATH"
+        ],
+        "set": {}
+      },
+      "network": "deny",
+      "allowHosts": [],
+      "expectedArtifacts": [],
+      "mutatesSource": false
+    }
+  ],
+  "bootstrap": [],
+  "review": {
+    "minimumReviewers": 2,
+    "minimumTrainingFamilies": 1,
+    "blockSeverities": [
+      "blocker",
+      "high"
+    ],
+    "allowIncomplete": false,
+    "maxRepairCycles": 2
+  },
+  "riskRules": [
+    {
+      "paths": [
+        ".github/**",
+        "package.json",
+        "pnpm-lock.yaml"
+      ],
+      "risk": "high",
+      "requiredCheckIds": [
+        "unit"
+      ],
+      "minimumTrainingFamilies": 2
+    }
+  ],
+  "egress": {
+    "allowedProviders": [
+      "fake"
+    ],
+    "allowedPathPatterns": [
+      "src/**",
+      "test/**"
+    ],
+    "deniedPathPatterns": [
+      ".env",
+      "**/.env",
+      "**/*.pem"
+    ],
+    "maxBytesPerRequest": 524288
+  },
+  "integration": {
+    "mode": "managed-ref",
+    "requireHumanApproval": true,
+    "approvalTtlSeconds": 1800,
+    "publishEnabled": false
+  },
+  "isolation": "cooperative-local",
+  "limits": {
+    "maxActiveWriters": 2,
+    "maxActiveReviews": 2,
+    "maxActiveBoards": 1,
+    "maxTaskDiskBytes": 1073741824,
+    "maxLogBytes": 33554432,
+    "allowNestedDelegation": false
+  }
+}
