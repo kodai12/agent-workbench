@@ -1,0 +1,44 @@
+{
+  "schemaVersion": 1,
+  "summary": "fixtureの範囲でAPIと加算処理を確認した。",
+  "verdict": "pass",
+  "findings": [],
+  "coverage": [
+    {
+      "path": "src/add.js",
+      "status": "complete",
+      "reason": "変更された1行全体を確認"
+    }
+  ],
+  "requirementCoverage": [
+    {
+      "requirementId": "R001",
+      "status": "supported",
+      "evidence": [
+        {
+          "kind": "file",
+          "reference": "src/add.js",
+          "digest": null,
+          "startLine": 1,
+          "endLine": 1,
+          "explanation": "candidateの実装はa+bを返す。"
+        }
+      ]
+    },
+    {
+      "requirementId": "R002",
+      "status": "supported",
+      "evidence": [
+        {
+          "kind": "file",
+          "reference": "src/add.js",
+          "digest": null,
+          "startLine": 1,
+          "endLine": 1,
+          "explanation": "candidateの実装はa+bを返す。"
+        }
+      ]
+    }
+  ],
+  "openQuestions": []
+}
