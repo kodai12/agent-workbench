@@ -1516,6 +1516,221 @@ if (method === "task.create") {
       });
       return getTask(tid) as unknown as Json;
     }
+if (method === "task.start") {
+      const task = getTask(text(p.taskId)),
+        repo = getRepo(task.repo_id),
+        policy = getPolicy(repo),
+        spec = record(task.spec_json),
+        selected = profile(text(spec.implementerProfile));
+      mark(
+        task.state === "ready",
+        "INVALID_TRANSITION",
+        "ready状態のtaskだけ開始できます",
+      );
+      mark(
+        task.policy_digest === repo.policy_digest,
+        "POLICY_CHANGED",
+        "policy変更後は新generationが必要です",
+      );
+      mark(
+        selected.driver === "fake" && knownFixture(repo),
+        "SANDBOX_UNVERIFIED",
+        "現在の実binaryでは厳格sandboxのcanaryが未検証です",
+      );
+      mark(
+        (p.interaction ?? spec.interaction) === "managed" &&
+          (p.presentation ?? policy.presentation) === "none",
+        "PRESENTATION_VARIANT_UNSUPPORTED",
+        "fake fixtureはmanaged/noneだけ対応します",
+      );
+      const active = db
+        .prepare(
+          "SELECT count(*) AS n FROM attempts WHERE writes_workspace=1 AND state IN ('created','starting','running','waiting_input','stopping','unknown')",
+        )
+        .get() as { n: number };
+      mark(
+        active.n < number(object(policy.limits).maxActiveWriters),
+        "WORKSPACE_BUSY",
+        "writer上限です",
+      );
+      const attempts = db
+        .prepare(
+          "SELECT count(*) AS n FROM attempts WHERE task_id=? AND role='implement'",
+        )
+        .get(task.id) as { n: number };
+      mark(
+        attempts.n < number(object(spec.budget).maxAttempts),
+        "BUDGET_EXCEEDED",
+        "attempt予算を超えました",
+      );
+      const deps = db
+        .prepare(
+          "SELECT d.dependency_id,t.state,c.candidate_sha FROM task_dependencies d JOIN tasks t ON t.id=d.dependency_id LEFT JOIN candidates c ON c.id=t.active_candidate_id WHERE d.task_id=?",
+        )
+        .all(task.id) as {
+        dependency_id: string;
+        state: string;
+        candidate_sha: string | null;
+      }[];
+      for (const dep of deps) {
+        mark(
+          dep.state === "integrated" && !!dep.candidate_sha,
+          "DEPENDENCY_UNRESOLVED",
+          "依存taskが未統合です",
+        );
+        db.prepare(
+          "UPDATE task_dependencies SET required_candidate_sha=? WHERE task_id=? AND dependency_id=?",
+        ).run(dep.candidate_sha, task.id, dep.dependency_id);
+      }
+      transition(task.id, "START_REQUESTED", {
+        dependenciesComplete: true,
+        dependencyShasFixed: true,
+        noActiveRun: true,
+        budgetAvailable: true,
+      });
+      const row = await workspace(task, "writer", repo.integration_sha);
+      const aid = await launchAttempt(
+        task,
+        row,
+        "implement",
+        text(spec.implementerProfile),
+        {
+          objective: spec.objective ?? "",
+          requirements: spec.requirements ?? [],
+          scope: spec.scope ?? {},
+        },
+      );
+      return {
+        taskId: task.id,
+        attemptId: aid,
+        workspaceId: row.id,
+        state: "allocating",
+      };
+    }
+if (method === "task.cancel") {
+      const task = getTask(text(p.taskId));
+      const active = db
+        .prepare(
+          "SELECT * FROM attempts WHERE task_id=? AND writes_workspace=1 AND state IN ('created','starting','running','waiting_input','stopping','unknown')",
+        )
+        .all(task.id) as AttemptRow[];
+      if (active.length) {
+        for (const attempt of active) {
+          db.prepare("UPDATE attempts SET state='stopping' WHERE id=?").run(
+            attempt.id,
+          );
+          try {
+            await controlWorker(home, attempt, "cancel");
+          } catch (error) {
+            if (
+              processStartIdentity(
+                number(record(attempt.process_identity_json ?? "{}").pid),
+              ) !== null
+            )
+              throw error;
+          }
+        }
+        event(task.id, "CANCEL_REQUESTED", { reason: p.reason ?? null });
+        return { taskId: task.id, state: task.state, cancelRequested: true };
+      }
+      transition(task.id, "CANCEL_QUIESCENT", {
+        noActiveWriter: true,
+        historyPreserved: true,
+      });
+      invalidate(task.id);
+      return getTask(task.id) as unknown as Json;
+    }
+if (method === "task.revise") {
+      const task = getTask(text(p.taskId));
+      mark(
+        task.state === "changes_required",
+        "INVALID_TRANSITION",
+        "changes_requiredだけ改訂できます",
+      );
+      const spec = p.spec
+        ? unwrap(validateContract("task-spec", p.spec))
+        : decode(task.spec_json);
+      validateTaskInput(getRepo(task.repo_id), object(spec), task.id);
+      const specArtifact = await saveArtifact(spec);
+      store.transact(() => {
+        invalidate(task.id);
+        replaceDependencies(task.id, object(spec));
+        db.prepare("INSERT INTO artifact_links VALUES(?,?,?,?)").run(
+          "task",
+          task.id,
+          "spec:" + String(task.generation + 1),
+          specArtifact.digest,
+        );
+        db.prepare(
+          "UPDATE tasks SET generation=generation+1,active_candidate_id=NULL,spec_json=?,spec_digest=?,policy_digest=? WHERE id=?",
+        ).run(
+          canonical(spec),
+          digest(spec),
+          getRepo(task.repo_id).policy_digest,
+          task.id,
+        );
+        transition(
+          task.id,
+          "REVISION_REQUESTED",
+          { revisionAuthorized: true, generationIncreased: true },
+          {
+            previousSpecDigest: task.spec_digest,
+            specDigest: specArtifact.digest,
+          },
+        );
+      });
+      return getTask(task.id) as unknown as Json;
+    }
+if (method === "task.recover") {
+      const task = getTask(text(p.taskId)),
+        attempts = db
+          .prepare(
+            "SELECT * FROM attempts WHERE task_id=? AND state IN ('unknown','stopping','running','starting')",
+          )
+          .all(task.id) as AttemptRow[];
+      const plan = {
+        taskId: task.id,
+        version: task.version,
+        attempts: attempts.map((a) => ({
+          id: a.id,
+          identity: a.process_identity_json
+            ? decode(a.process_identity_json)
+            : null,
+          alive: a.process_identity_json
+            ? alive(number(record(a.process_identity_json).pid))
+            : null,
+        })),
+      };
+      const hash = digest(plan);
+      if (!p.planDigest) return { plan, planDigest: hash };
+      mark(
+        p.planDigest === hash,
+        "VERSION_CONFLICT",
+        "復旧計画が変化しています",
+      );
+      mark(
+        plan.attempts.every((a) => a.alive === false),
+        "WRITER_NOT_QUIESCENT",
+        "旧worker停止を確定できません",
+      );
+      store.transact(() => {
+        db.prepare(
+          "UPDATE attempts SET state='failed',ended_at_ms=? WHERE task_id=? AND state IN ('unknown','stopping','running','starting')",
+        ).run(Date.now(), task.id);
+        db.prepare(
+          "UPDATE leases SET status='released' WHERE owner_attempt_id IN (SELECT id FROM attempts WHERE task_id=?)",
+        ).run(task.id);
+        db.prepare(
+          "UPDATE tasks SET generation=generation+1,active_candidate_id=NULL WHERE id=?",
+        ).run(task.id);
+        transition(task.id, "RECOVERY_RETRY_AUTHORIZED", {
+          oldWriterQuiescent: true,
+          workspacePreserved: true,
+          generationIncreased: true,
+        });
+      });
+      return getTask(task.id) as unknown as Json;
+    }
 if (method === "approval.request") {
       const task = getTask(text(p.taskId)),
         repo = getRepo(task.repo_id),
@@ -1924,6 +2139,105 @@ throw {
       });
     });
   }
+  async function reconcile(): Promise<void> {
+    if (reconciling) return;
+    reconciling = true;
+    const release = await acquireMutation();
+    try {
+      for (const attempt of db
+        .prepare(
+          "SELECT * FROM attempts WHERE role='implement' AND state IN ('starting','running','stopping')",
+        )
+        .all() as AttemptRow[]) {
+        try {
+          if (await finishWorker(attempt)) {
+            const task = getTask(attempt.task_id);
+            if (attempt.state === "stopping") {
+              transition(task.id, "CANCEL_QUIESCENT", {
+                noActiveWriter: true,
+                historyPreserved: true,
+              });
+              continue;
+            }
+            await freeze(attempt.task_id, attempt);
+          }
+        } catch (error) {
+          db.prepare(
+            "UPDATE attempts SET state='unknown',error_json=? WHERE id=?",
+          ).run(canonical(jsonError(error)), attempt.id);
+          const task = getTask(attempt.task_id);
+          if (
+            !["integrated", "cancelled", "recovery_required"].includes(
+              task.state,
+            )
+          )
+            transition(
+              task.id,
+              "EXECUTION_UNCERTAIN",
+              { uncertaintyObserved: true },
+              { error: jsonError(error) },
+            );
+        }
+      }
+      for (const integration of db
+        .prepare(
+          "SELECT i.*,r.repo_id FROM integrations i JOIN tasks r ON r.id=i.task_id WHERE i.state='prepared'",
+        )
+        .all() as {
+        id: string;
+        task_id: string;
+        repo_id: string;
+        candidate_id: string;
+        approval_id: string;
+        command_id: string;
+        target_ref: string;
+        expected_old_sha: string;
+        new_sha: string;
+      }[]) {
+        const result = unwrap(
+          await git
+            .forRepository(integration.repo_id)
+            .reconcileIntegration(
+              integration.target_ref,
+              integration.expected_old_sha,
+              integration.new_sha,
+            ),
+        );
+        if (result === "applied") {
+          const approval = db
+            .prepare("SELECT request_id FROM approvals WHERE id=?")
+            .get(integration.approval_id) as { request_id: string };
+          confirmIntegration(
+            integration.id,
+            integration.task_id,
+            integration.repo_id,
+            integration.candidate_id,
+            approval.request_id,
+            integration.new_sha,
+          );
+          db.prepare(
+            "UPDATE commands SET state='completed',result_json=?,updated_at_ms=? WHERE id=?",
+          ).run(
+            canonical({ taskId: integration.task_id, state: "integrated" }),
+            Date.now(),
+            integration.command_id,
+          );
+        } else if (result === "uncertain") {
+          db.prepare(
+            "UPDATE integrations SET state='uncertain' WHERE id=?",
+          ).run(integration.id);
+          const task = getTask(integration.task_id);
+          if (task.state === "integrating")
+            transition(task.id, "EXECUTION_UNCERTAIN", {
+              uncertaintyObserved: true,
+            });
+        }
+      }
+    } finally {
+      release();
+      reconciling = false;
+    }
+  }
   async function dispatch(
     request: CommandRequest,
     actor: Actor,
@@ -2081,6 +2395,45 @@ throw {
       release();
     }
   }
+  for (const task of db
+    .prepare(
+      "SELECT * FROM tasks WHERE state IN ('allocating','running','waiting_human','freezing','verifying','reviewing','integrating')",
+    )
+    .all() as TaskRow[]) {
+    const prepared = db
+      .prepare(
+        "SELECT 1 FROM integrations WHERE task_id=? AND state='prepared'",
+      )
+      .get(task.id);
+    if (prepared) continue;
+    const active = db
+      .prepare(
+        "SELECT * FROM attempts WHERE task_id=? AND writes_workspace=1 AND state IN ('created','starting','running','waiting_input','stopping','unknown')",
+      )
+      .all(task.id) as AttemptRow[];
+    if (
+      active.length &&
+      active.every(
+        (attempt) =>
+          attempt.process_identity_json !== null && attempt.state !== "created",
+      )
+    )
+      continue;
+    store.transact(() => {
+      db.prepare(
+        "UPDATE attempts SET state='unknown' WHERE task_id=? AND state IN ('created','starting','running','waiting_input','stopping')",
+      ).run(task.id);
+      db.prepare(
+        "UPDATE checks SET state='unknown' WHERE candidate_id IN (SELECT id FROM candidates WHERE task_id=?) AND state='running'",
+      ).run(task.id);
+      transition(
+        task.id,
+        "EXECUTION_UNCERTAIN",
+        { uncertaintyObserved: true },
+        { reason: "daemonの継続処理が失われたため明示復旧が必要です" },
+      );
+    });
+  }
   return {
     store,
     artifacts,
@@ -2101,5 +2454,4 @@ throw {
       return rows as Json[];
     },
   };
-  async function reconcile():Promise<void> {throw {code:'UNSUPPORTED_OPERATION',message:'復旧は後続の接続段で追加します'};}
 }
