@@ -1,0 +1,551 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://agent-workbench.invalid/contracts/board-post.schema.json",
+  "type": "object",
+  "properties": {
+    "schemaVersion": {
+      "const": 1
+    },
+    "items": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 80
+          },
+          "title": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 300
+          },
+          "proposal": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 12000
+          },
+          "decisivePremises": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 4000
+            },
+            "minItems": 1,
+            "maxItems": 30
+          },
+          "failureModes": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 4000
+            },
+            "minItems": 1,
+            "maxItems": 30
+          },
+          "evidence": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "kind": {
+                  "type": "string",
+                  "enum": [
+                    "file",
+                    "check",
+                    "artifact",
+                    "source"
+                  ]
+                },
+                "reference": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 4096
+                },
+                "digest": {
+                  "anyOf": [
+                    {
+                      "type": "string",
+                      "pattern": "^sha256:[0-9a-f]{64}$"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "startLine": {
+                  "anyOf": [
+                    {
+                      "type": "integer",
+                      "minimum": 1,
+                      "maximum": 9007199254740991
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "endLine": {
+                  "anyOf": [
+                    {
+                      "type": "integer",
+                      "minimum": 1,
+                      "maximum": 9007199254740991
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "explanation": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 4000
+                }
+              },
+              "required": [
+                "kind",
+                "reference",
+                "digest",
+                "startLine",
+                "endLine",
+                "explanation"
+              ],
+              "additionalProperties": false
+            },
+            "minItems": 0,
+            "maxItems": 50
+          },
+          "forkedFrom": {
+            "anyOf": [
+              {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 80
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "estimate": {
+            "anyOf": [
+              {
+                "type": "object",
+                "properties": {
+                  "value": {
+                    "type": "number"
+                  },
+                  "lower": {
+                    "type": "number"
+                  },
+                  "upper": {
+                    "type": "number"
+                  },
+                  "unit": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 80
+                  },
+                  "assumptions": {
+                    "type": "array",
+                    "items": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 4000
+                    },
+                    "minItems": 1,
+                    "maxItems": 30
+                  }
+                },
+                "required": [
+                  "value",
+                  "lower",
+                  "upper",
+                  "unit",
+                  "assumptions"
+                ],
+                "additionalProperties": false
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "id",
+          "title",
+          "proposal",
+          "decisivePremises",
+          "failureModes",
+          "evidence",
+          "forkedFrom",
+          "estimate"
+        ],
+        "additionalProperties": false
+      },
+      "minItems": 0,
+      "maxItems": 20
+    },
+    "objections": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "targetItem": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 80
+          },
+          "claim": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 8000
+          },
+          "evidence": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "kind": {
+                  "type": "string",
+                  "enum": [
+                    "file",
+                    "check",
+                    "artifact",
+                    "source"
+                  ]
+                },
+                "reference": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 4096
+                },
+                "digest": {
+                  "anyOf": [
+                    {
+                      "type": "string",
+                      "pattern": "^sha256:[0-9a-f]{64}$"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "startLine": {
+                  "anyOf": [
+                    {
+                      "type": "integer",
+                      "minimum": 1,
+                      "maximum": 9007199254740991
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "endLine": {
+                  "anyOf": [
+                    {
+                      "type": "integer",
+                      "minimum": 1,
+                      "maximum": 9007199254740991
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "explanation": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 4000
+                }
+              },
+              "required": [
+                "kind",
+                "reference",
+                "digest",
+                "startLine",
+                "endLine",
+                "explanation"
+              ],
+              "additionalProperties": false
+            },
+            "minItems": 0,
+            "maxItems": 30
+          },
+          "classification": {
+            "type": "string",
+            "enum": [
+              "fatal_candidate",
+              "tradeoff",
+              "question"
+            ]
+          }
+        },
+        "required": [
+          "targetItem",
+          "claim",
+          "evidence",
+          "classification"
+        ],
+        "additionalProperties": false
+      },
+      "minItems": 0,
+      "maxItems": 100
+    },
+    "concessions": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "itemId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 80
+          },
+          "namedReason": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 8000
+          }
+        },
+        "required": [
+          "itemId",
+          "namedReason"
+        ],
+        "additionalProperties": false
+      },
+      "minItems": 0,
+      "maxItems": 30
+    },
+    "premiseAudits": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "itemId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 80
+          },
+          "premise": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 4000
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "verified",
+              "refuted",
+              "unverified"
+            ]
+          },
+          "whatEstablished": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 8000
+          },
+          "whatNotEstablished": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 8000
+          },
+          "evidence": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "kind": {
+                  "type": "string",
+                  "enum": [
+                    "file",
+                    "check",
+                    "artifact",
+                    "source"
+                  ]
+                },
+                "reference": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 4096
+                },
+                "digest": {
+                  "anyOf": [
+                    {
+                      "type": "string",
+                      "pattern": "^sha256:[0-9a-f]{64}$"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "startLine": {
+                  "anyOf": [
+                    {
+                      "type": "integer",
+                      "minimum": 1,
+                      "maximum": 9007199254740991
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "endLine": {
+                  "anyOf": [
+                    {
+                      "type": "integer",
+                      "minimum": 1,
+                      "maximum": 9007199254740991
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "explanation": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 4000
+                }
+              },
+              "required": [
+                "kind",
+                "reference",
+                "digest",
+                "startLine",
+                "endLine",
+                "explanation"
+              ],
+              "additionalProperties": false
+            },
+            "minItems": 0,
+            "maxItems": 30
+          }
+        },
+        "required": [
+          "itemId",
+          "premise",
+          "status",
+          "whatEstablished",
+          "whatNotEstablished",
+          "evidence"
+        ],
+        "additionalProperties": false
+      },
+      "minItems": 0,
+      "maxItems": 100
+    },
+    "position": {
+      "type": "object",
+      "properties": {
+        "champion": {
+          "anyOf": [
+            {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 80
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "coPicks": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 80
+          },
+          "minItems": 0,
+          "maxItems": 2
+        },
+        "dropCondition": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 8000
+        },
+        "changeReason": {
+          "anyOf": [
+            {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 8000
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "deadItems": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "itemId": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 80
+              },
+              "reason": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 8000
+              }
+            },
+            "required": [
+              "itemId",
+              "reason"
+            ],
+            "additionalProperties": false
+          },
+          "minItems": 0,
+          "maxItems": 100
+        },
+        "openCruxes": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 8000
+          },
+          "minItems": 0,
+          "maxItems": 30
+        },
+        "pitch": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 4000
+        }
+      },
+      "required": [
+        "champion",
+        "coPicks",
+        "dropCondition",
+        "changeReason",
+        "deadItems",
+        "openCruxes",
+        "pitch"
+      ],
+      "additionalProperties": false
+    }
+  },
+  "required": [
+    "schemaVersion",
+    "items",
+    "objections",
+    "concessions",
+    "premiseAudits",
+    "position"
+  ],
+  "additionalProperties": false
+}
