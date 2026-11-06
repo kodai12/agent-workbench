@@ -1,0 +1,57 @@
+{
+  "schemaVersion": 1,
+  "title": "add関数の加算バグを直す",
+  "objective": "既知のfixtureでadd(2,3)が5になることを保証する。",
+  "scope": {
+    "allowedPaths": [
+      "src/**",
+      "test/**"
+    ],
+    "forbiddenPaths": [
+      ".github/**",
+      ".codex/**"
+    ],
+    "outOfScope": [
+      "依存追加",
+      "外部APIアクセス"
+    ]
+  },
+  "requirements": [
+    {
+      "id": "R001",
+      "requirement": "add(2,3)=5、add(-1,1)=0を満たす",
+      "verification": "check",
+      "checkIds": [
+        "unit"
+      ]
+    },
+    {
+      "id": "R002",
+      "requirement": "引数の意味とAPIを変更しない",
+      "verification": "review",
+      "checkIds": []
+    }
+  ],
+  "contextFiles": [
+    "src/add.js",
+    "test/add.test.js"
+  ],
+  "dependsOn": [],
+  "risk": "standard",
+  "implementerProfile": "fake-coding",
+  "reviewerProfiles": [
+    "fake-review-a",
+    "fake-review-b"
+  ],
+  "checkIds": [
+    "unit"
+  ],
+  "interaction": "managed",
+  "budget": {
+    "maxAttempts": 5,
+    "maxRepairCycles": 2,
+    "wallTimeSeconds": 1800,
+    "outputTokenLimit": 30000,
+    "costLimitMicros": null
+  }
+}
