@@ -1,0 +1,16 @@
+import {test} from 'node:test';
+import assert from 'node:assert/strict';
+import {readFileSync,readdirSync} from 'node:fs';
+import {join,dirname} from 'node:path';
+import {contracts,contractDirectory,parseJson,parseJsonBytes,validateContract} from '../../src/contracts/loader.js';
+import {canonical,digest} from '../../src/domain/canonical.js';
+test('T01 全14契約と11個の2020-12 schemaをロードする',()=>{assert.equal(contracts.size,14);assert.equal([...contracts.keys()].filter(k=>k.endsWith('.schema.json')).length,11);});
+test('T02 正常例6件を実際のvalidatorで検証する',()=>{const files=readdirSync(join(dirname(dirname(contractDirectory)),'examples'));assert.equal(files.length,6);for(const file of files){const parsed=parseJson(readFileSync(join(dirname(dirname(contractDirectory)),'examples',file),'utf8'));assert.equal(parsed.ok,true,file);if(parsed.ok)assert.equal(validateContract(file.replace('.json',''),parsed.value).ok,true,file);}});
+test('T03 未知のfieldと未知の契約を拒否する',()=>{const value=JSON.parse(readFileSync(join(dirname(dirname(contractDirectory)),'examples/model-profile.json'),'utf8'));assert.equal(validateContract('model-profile',{...value,unknown:1}).ok,false);assert.equal(validateContract('missing',{}).ok,false);});
+for(const text of ['{"x":1,"x":2}','{"x":1,"\\u0078":2}','{"a":{"x":0,"x":1}}','[1,]','{"a":1} garbage','1e400','{"a":NaN}'])test('T03 不正JSON拒否 '+text,()=>assert.equal(parseJson(text).ok,false));
+test('T03 key数とdepthを制限し、兄弟objectの同名keyは許す',()=>{assert.equal(parseJson('['.repeat(66)+'0'+']'.repeat(66)).ok,false);assert.equal(parseJson(JSON.stringify(Object.fromEntries(Array.from({length:10001},(_,i)=>['k'+i,i])))).ok,false);assert.equal(parseJson('[{"x":1},{"x":2}]').ok,true);assert.equal(parseJson('{"__proto__":{"x":1}}').ok,true);assert.equal(({} as {x?:number}).x,undefined);});
+test('T77 UTF-8とframe上限を検査する',()=>{assert.equal(parseJsonBytes(new Uint8Array([0xff])).ok,false);assert.equal(parseJson(' '.repeat(8*1024*1024+1)).ok,false);assert.equal(parseJsonBytes(new Uint8Array(8*1024*1024+1)).ok,false);});
+test('T04 canonicalはキー順を固定し文字列と配列順を保存する',()=>{assert.equal(canonical({b:2,a:'日本語'}),'{"a":"日本語","b":2}');assert.equal(digest({a:1,b:2}),digest({b:2,a:1}));assert.notEqual(digest(['a','b']),digest(['b','a']));assert.notEqual(digest('é'),digest('é'));assert.equal(canonical(Number.MAX_SAFE_INTEGER),'9007199254740991');});
+for(const value of [NaN,Infinity,1.5,Number.MAX_SAFE_INTEGER+1,undefined,new Date(),{日本語:1},new Array(2)])test('T04 canonical不適合値 '+String(value),()=>assert.throws(()=>canonical(value)));
+test('schemaの自由objectでもundefined、循環、疎配列をJsonとして受理しない',()=>{const worker={schemaVersion:1,attemptId:'run_'+'a'.repeat(32),sourceSeq:1,workerInstanceId:'wkr_'+'a'.repeat(32),occurredAtMs:1,type:'heartbeat',data:{value:undefined}};assert.equal(validateContract('worker-event',worker).ok,false);const cyclic:Record<string,unknown>={};cyclic.self=cyclic;assert.equal(validateContract('worker-event',{...worker,data:cyclic}).ok,false);assert.equal(validateContract('worker-event',{...worker,data:{values:new Array(2)}}).ok,false);});
+test('不正JSONの診断へ入力本文や秘密値を含めない',()=>{const invalid=parseJson('secret-value-in-malformed-frame');assert.equal(invalid.ok,false);if(!invalid.ok){assert.equal(invalid.error.code,'INVALID_JSON');assert.equal(JSON.stringify(invalid.error).includes('secret-value'),false);}});
