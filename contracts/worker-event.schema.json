@@ -1,0 +1,59 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://agent-workbench.invalid/contracts/worker-event.schema.json",
+  "type": "object",
+  "properties": {
+    "schemaVersion": {
+      "const": 1
+    },
+    "attemptId": {
+      "type": "string",
+      "pattern": "^[a-z]+_[0-9a-f]{32}$"
+    },
+    "sourceSeq": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 9007199254740991
+    },
+    "workerInstanceId": {
+      "type": "string",
+      "pattern": "^[a-z]+_[0-9a-f]{32}$"
+    },
+    "occurredAtMs": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 9007199254740991
+    },
+    "type": {
+      "type": "string",
+      "enum": [
+        "worker.ready",
+        "run.started",
+        "message.delta",
+        "message.completed",
+        "tool.started",
+        "tool.completed",
+        "input.requested",
+        "usage.updated",
+        "run.completed",
+        "run.failed",
+        "run.cancelled",
+        "heartbeat",
+        "protocol.warning"
+      ]
+    },
+    "data": {
+      "type": "object"
+    }
+  },
+  "required": [
+    "schemaVersion",
+    "attemptId",
+    "sourceSeq",
+    "workerInstanceId",
+    "occurredAtMs",
+    "type",
+    "data"
+  ],
+  "additionalProperties": false
+}
