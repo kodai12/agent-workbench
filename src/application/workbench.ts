@@ -1001,6 +1001,340 @@ export function createWorkbench(home: string) {
       await new Promise((resolve) => setTimeout(resolve, 10));
     }
   }
+  async function review(taskId: string, rerun: boolean): Promise<Json> {
+    const task = getTask(taskId),
+      repo = getRepo(task.repo_id),
+      candidate = getCandidate(task),
+      policy = getPolicy(repo),
+      spec = record(task.spec_json);
+    mark(
+      ["reviewing", "awaiting_approval", "changes_required"].includes(
+        task.state,
+      ),
+      "INVALID_TRANSITION",
+      "レビュー可能な状態ではありません",
+    );
+    mark(
+      knownFixture(repo),
+      "SANDBOX_UNVERIFIED",
+      "実reviewには独立sessionとsandbox検証が必要です",
+    );
+    if (rerun) {
+      invalidate(taskId);
+      db.prepare("UPDATE tasks SET state='reviewing' WHERE id=?").run(taskId);
+    }
+    const manifest = object(await artifactJson(candidate.manifest_digest)),
+      changed = list(manifest.files).map((v) => text(object(v).path));
+    const jobs: {
+      aid: string;
+      row: WorkspaceRow;
+      profileName: string;
+      execution: number;
+      reviewId: string;
+      contextDigest: Digest;
+    }[] = [];
+    for (const name of strings(spec.reviewerProfiles)) {
+      const previous = db
+        .prepare(
+          "SELECT state FROM reviews WHERE candidate_id=? AND profile_id=? ORDER BY execution_number DESC LIMIT 1",
+        )
+        .get(candidate.id, name);
+      if (previous && !rerun) continue;
+      const selected = profile(name);
+      mark(
+        selected.driver === "fake",
+        "EGRESS_DENIED",
+        "外部reviewへの送信は許可されていません",
+      );
+      const row = await workspace(task, "review", candidate.candidate_sha);
+      const checks = db
+        .prepare(
+          "SELECT check_key,state,result_digest FROM checks WHERE candidate_id=?",
+        )
+        .all(candidate.id) as Json[];
+      const packet = makeReviewPacket({
+        task: decode(task.spec_json),
+        candidate: decode(candidate.identity_json),
+        manifest,
+        diffs: await gitRun([
+          "--git-dir",
+          repo.managed_git_dir,
+          "diff",
+          "--no-ext-diff",
+          "--no-textconv",
+          "--binary",
+          candidate.base_sha,
+          candidate.candidate_sha,
+        ]),
+        constraints: { isolation: "fixture-only" },
+        checks,
+        coverage: { paths: changed },
+        outputSchema: contracts.get("review-output.schema.json") as Json,
+      });
+      const packetValue = {
+        ...object(packet),
+        changedPaths: changed,
+        requirements: spec.requirements ?? [],
+      };
+      const aid = await launchAttempt(task, row, "review", name, packetValue),
+        reviewId = id("rev"),
+        n = db
+          .prepare(
+            "SELECT coalesce(max(execution_number),0)+1 AS n FROM reviews WHERE candidate_id=? AND profile_id=?",
+          )
+          .get(candidate.id, name) as { n: number };
+      const contextDigest = digest(packetValue);
+      db.prepare(
+        "INSERT INTO reviews(id,candidate_id,attempt_id,profile_id,execution_number,provider_id,training_family,model_id,context_digest,state,created_at_ms) VALUES(?,?,?,?,?,?,?,?,?,?,?)",
+      ).run(
+        reviewId,
+        candidate.id,
+        aid,
+        name,
+        n.n,
+        text(selected.providerId),
+        text(selected.trainingFamily),
+        typeof selected.modelId === "string" ? selected.modelId : "fake",
+        contextDigest,
+        "running",
+        Date.now(),
+      );
+      jobs.push({
+        aid,
+        row,
+        profileName: name,
+        execution: n.n,
+        reviewId,
+        contextDigest,
+      });
+    }
+    const sources: Record<string, SourceEvidence> = {};
+    for (const file of list(manifest.files).map(object)) {
+      if (file.change === "deleted") continue;
+      const content = await gitRun([
+        "--git-dir",
+        repo.managed_git_dir,
+        "show",
+        candidate.candidate_sha + ":" + text(file.path),
+      ]);
+      sources[text(file.path)] = {
+        digest: toDigest(text(file.contentSha256)),
+        lineCount: content.split("\n").length,
+        candidateIdentityDigest: candidate.identity_digest,
+        kind: "file",
+      };
+    }
+    for (const job of jobs) {
+      await waitWorker(job.aid);
+      const raw = readFileSync(
+        join(home, "workers", job.aid, "output.json"),
+        "utf8",
+      );
+      const output = unwrap(parseJson(raw));
+      const checked = validateReview(output, {
+        candidateIdentityDigest: candidate.identity_digest,
+        changedPaths: changed,
+        requirementIds: list(spec.requirements).map((v) => text(object(v).id)),
+        sources,
+        fresh: true,
+        readOnly:
+          (await gitRun([
+            "-C",
+            job.row.path,
+            "status",
+            "--porcelain=v1",
+            "-z",
+            "--untracked-files=all",
+          ])) === "" &&
+          (await gitRun(["-C", job.row.path, "rev-parse", "HEAD"])).trim() ===
+            candidate.candidate_sha,
+        authorAttemptId: text(
+          (
+            db
+              .prepare(
+                "SELECT id FROM attempts WHERE task_id=? AND role='implement' ORDER BY started_at_ms DESC LIMIT 1",
+              )
+              .get(taskId) as { id: string }
+          ).id,
+        ),
+        reviewAttemptId: job.aid,
+      });
+      const saved = await saveArtifact(raw);
+      db.prepare(
+        "UPDATE reviews SET state=?,output_digest=?,verdict=? WHERE id=?",
+      ).run(
+        checked.ok ? "valid" : "invalid",
+        saved.digest,
+        checked.ok ? text(object(checked.value).verdict) : null,
+        job.reviewId,
+      );
+      if (checked.ok)
+        for (const finding of list(object(checked.value).findings).map(object))
+          db.prepare(
+            "INSERT INTO findings(id,review_id,local_key,severity,fingerprint,payload_json) VALUES(?,?,?,?,?,?)",
+          ).run(
+            id("fnd"),
+            job.reviewId,
+            text(finding.key),
+            text(finding.severity),
+            digest(finding),
+            canonical(finding),
+          );
+    }
+    const gate = await gateFor(taskId);
+    if (getTask(taskId).state === "reviewing")
+      transition(
+        taskId,
+        gate.passed ? "REVIEWS_PASSED" : "REVIEWS_FAILED",
+        gate.passed
+          ? {
+              reviewGatePassed: true,
+              familiesSufficient: true,
+              coverageComplete: true,
+              findingsDisposed: true,
+            }
+          : { reviewFailureObserved: true },
+      );
+    event(taskId, "REVIEW_EVIDENCE_RECORDED", {
+      candidateId: candidate.id,
+      passed: gate.passed,
+    });
+    return gate as unknown as Json;
+  }
+  async function gateFor(taskId: string) {
+    const task = getTask(taskId),
+      repo = getRepo(task.repo_id),
+      candidate = getCandidate(task),
+      policy = getPolicy(repo),
+      spec = record(task.spec_json),
+      identity = record(candidate.identity_json),
+      plan = record(
+        (
+          db
+            .prepare("SELECT json FROM config_versions WHERE digest=?")
+            .get(candidate.check_plan_digest) as { json: string }
+        ).json,
+      ),
+      manifest = object(await artifactJson(candidate.manifest_digest));
+    const checks: CheckResult[] = [];
+    for (const row of db
+      .prepare(
+        "SELECT result_digest FROM checks c WHERE candidate_id=? AND execution_number=(SELECT max(execution_number) FROM checks WHERE candidate_id=c.candidate_id AND check_key=c.check_key)",
+      )
+      .all(candidate.id) as { result_digest: Digest | null }[]) {
+      if (row.result_digest)
+        checks.push(
+          (await artifactJson(row.result_digest)) as unknown as CheckResult,
+        );
+    }
+    const reviews: GateReview[] = [];
+    for (const row of db
+      .prepare("SELECT * FROM reviews WHERE candidate_id=?")
+      .all(candidate.id) as {
+      id: string;
+      profile_id: string;
+      training_family: string;
+      output_digest: Digest | null;
+      state: string;
+      execution_number: number;
+    }[]) {
+      if (!row.output_digest) continue;
+      reviews.push({
+        id: row.id,
+        profileId: row.profile_id,
+        trainingFamily: row.training_family,
+        candidateIdentityDigest: candidate.identity_digest,
+        artifactDigest: row.output_digest,
+        output: await artifactJson(row.output_digest),
+        valid: row.state === "valid",
+        fresh: true,
+        readOnly: true,
+        simulated: knownFixture(repo),
+        execution: row.execution_number,
+      });
+    }
+    const digests = new Set<string>();
+    for (const row of db.prepare("SELECT digest FROM artifacts").all() as {
+      digest: Digest;
+    }[]) {
+      const checked = await artifacts.readVerified(row.digest);
+      if (checked.ok) digests.add(row.digest);
+    }
+    const writer =
+      number(
+        (
+          db
+            .prepare(
+              "SELECT count(*) AS n FROM attempts WHERE task_id=? AND writes_workspace=1 AND state IN ('created','starting','running','waiting_input','stopping','unknown')",
+            )
+            .get(taskId) as { n: number }
+        ).n,
+      ) > 0;
+    let minFamilies = number(plan.minimumTrainingFamilies),
+      minReviews = number(plan.minimumReviewers);
+    if (spec.risk === "high") {
+      minFamilies = Math.max(2, minFamilies);
+      minReviews = Math.max(2, minReviews);
+    }
+    const changed = list(manifest.files).map((v) => text(object(v).path));
+    const dispositions: FindingDisposition[] = [];
+    for (const row of db
+      .prepare(
+        "SELECT d.*,f.review_id,f.local_key FROM finding_dispositions d JOIN findings f ON f.id=d.finding_id JOIN reviews r ON r.id=f.review_id WHERE r.candidate_id=?",
+      )
+      .all(candidate.id) as {
+      review_id: string;
+      local_key: string;
+      disposition_version: number;
+      disposition: FindingDisposition["state"];
+      actor_kind: string;
+      actor_id: string;
+      reason: string;
+      evidence_digest: Digest | null;
+    }[]) {
+      dispositions.push({
+        findingId: row.review_id + ":" + row.local_key,
+        version: row.disposition_version,
+        state: row.disposition,
+        actor: { kind: "human", id: row.actor_id, connectionId: "local" },
+        independentReviewer: row.actor_kind === "independent_reviewer",
+        reason: row.reason,
+        evidence: row.evidence_digest ? [row.evidence_digest] : [],
+      });
+    }
+    const input: GateInput = {
+      candidateIdentity: identity,
+      candidateIdentityDigest: candidate.identity_digest,
+      currentIdentity: {
+        ...identity,
+        specDigest: task.spec_digest,
+        policyDigest: repo.policy_digest,
+        environmentDigest: digest(environment(task)),
+      },
+      requiredCheckIds: list(plan.checks).map((v) => text(object(v).id)),
+      checks,
+      reviews,
+      requiredReviewerProfiles: strings(spec.reviewerProfiles),
+      minimumReviewers: minReviews,
+      minimumTrainingFamilies: minFamilies,
+      blockSeverities: strings(plan.blockSeverities),
+      changedPaths: changed,
+      requirementIds: list(spec.requirements).map((v) => text(object(v).id)),
+      dispositions,
+      authorId: taskId,
+      risk: text(plan.risk),
+      allowedRiskSeverities: ["medium", "low"],
+      artifacts: digests,
+      activeWriter: writer,
+      pendingPermission: false,
+      budgetValid:
+        Date.now() - task.created_at_ms <=
+        number(object(spec.budget).wallTimeSeconds) * 1000,
+      protocolValid: knownFixture(repo),
+      fixtureMode: knownFixture(repo),
+    };
+    return evaluateGate(input);
+  }
   async function dispatchBody(method:string,p:ObjectValue,actor:Actor,commandId:string):Promise<Json> {
 const config = readConfig(home),
       boards = createBoardService(store, artifacts, config),
@@ -1376,7 +1710,5 @@ throw {
       return rows as Json[];
     },
   };
-  async function gateFor(_taskId:string):Promise<ReturnType<typeof evaluateGate>> {throw {code:'UNSUPPORTED_OPERATION',message:'gateは後続の接続段で追加します'};}
   async function reconcile():Promise<void> {throw {code:'UNSUPPORTED_OPERATION',message:'復旧は後続の接続段で追加します'};}
-  async function review(_taskId:string,_rerun:boolean):Promise<Json> {throw {code:'UNSUPPORTED_OPERATION',message:'reviewは後続の接続段で追加します'};}
 }
