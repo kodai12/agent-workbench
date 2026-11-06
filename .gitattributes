@@ -1,0 +1,5 @@
+src/generated/** linguist-generated=true
+protocol-lock.json linguist-generated=true
+pnpm-lock.yaml linguist-generated=true
+docs/DESIGN.html linguist-generated=true
+verification/PRODUCT_TESTS.log linguist-generated=true
