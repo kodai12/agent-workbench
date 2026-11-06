@@ -38,6 +38,6 @@
 - TTYの人間承認入力は未実施。非TTYでの拒否と、製品内部のbinding検証・期限・再送・統合はテストしています。
 - pnpm test:liveにはlive suiteがなく、対象ゼロ件として失敗します。live試験を済ませた扱いにはしません。
 - Git symlink/gitlink変更は初版では保守的に拒否します。NFS/SMB/同期ドライブは非対応です。
-- push、PR作成、実リポジトリへの反映は実施していません。
+- 実リポジトリへの反映は未実施です。公開状態とレビューはGitHubのDraft PRで管理します。
 
-独立レビューの修正と再確認は[REVIEW.md](docs/REVIEW.md)に記録しました。comments検査67file、tests検査24fileとも成功。plan-lint/plan-verify成功。ローカルbranchはfeat/workbench-foundation、remote未設定です。
+独立レビューの修正と再確認は[REVIEW.md](docs/REVIEW.md)に記録しました。comments検査67file、tests検査24fileとも成功。plan-lint/plan-verify成功。作業branchはfeat/workbench-foundationです。
