@@ -436,6 +436,327 @@ export function createWorkbench(home: string) {
         "INSERT INTO task_dependencies(task_id,dependency_id) VALUES(?,?)",
       ).run(taskId, dependency);
   }
+  async function contextFor(
+    task: TaskRow,
+    base: string,
+  ): Promise<{
+    instructionsDigest: Digest;
+    contextDigest: Digest;
+    instructions: Json;
+    context: Json;
+  }> {
+    const repo = getRepo(task.repo_id),
+      spec = record(task.spec_json);
+    const names = (
+      await gitRun([
+        "--git-dir",
+        repo.managed_git_dir,
+        "ls-tree",
+        "-r",
+        "--name-only",
+        "-z",
+        base,
+      ])
+    )
+      .split("\0")
+      .filter(Boolean);
+    let total = 0;
+    const capture = async (paths: string[]): Promise<Json> => {
+      const files: Json[] = [];
+      for (const path of paths) {
+        mark(
+          names.includes(path),
+          "CONTEXT_MISSING",
+          "baseにcontext fileがありません: " + path,
+        );
+        const bytes = Buffer.from(
+          await gitRun(
+            ["--git-dir", repo.managed_git_dir, "show", base + ":" + path],
+            { encoding: "latin1" },
+          ),
+          "latin1",
+        );
+        total += bytes.length;
+        mark(
+          total <= 1048576,
+          "RESOURCE_LIMIT",
+          "contextと指示が1MiBを超えます",
+        );
+        const ref = unwrap(await artifacts.put(bytes, "text/plain", 1048576));
+        files.push({ path, digest: ref.digest, sizeBytes: ref.sizeBytes });
+      }
+      return { base, files };
+    };
+    const instructions = await capture(
+        names.filter(
+          (name) => name === "AGENTS.md" || name.endsWith("/AGENTS.md"),
+        ),
+      ),
+      context = await capture(strings(spec.contextFiles));
+    const instructionsDigest = configVersion(
+        "instructions",
+        instructions,
+        true,
+      ),
+      contextDigest = (await saveArtifact(context)).digest;
+    return { instructionsDigest, contextDigest, instructions, context };
+  }
+  async function launchAttempt(
+    task: TaskRow,
+    row: WorkspaceRow,
+    role: "implement" | "review",
+    profileName: string,
+    packet: Json,
+  ): Promise<string> {
+    const selected = profile(profileName),
+      repo = getRepo(task.repo_id);
+    mark(
+      selected.driver === "fake" && knownFixture(repo),
+      "SANDBOX_UNVERIFIED",
+      "real providerのsandboxとegressは未検証です",
+    );
+    const aid = id("run"),
+      instance = id("wrk"),
+      dir = join(home, "workers", aid);
+    privateDirectory(dir);
+    const workerSocket = socketPathFor(dir);
+    await prepareSocketDirectory(dir, workerSocket);
+    const now = Date.now(),
+      budget = object(record(task.spec_json).budget);
+    const deadline = now + number(budget.wallTimeSeconds) * 1000;
+    db.prepare(
+      "INSERT INTO attempts(id,task_id,workspace_id,role,generation,driver,profile_json,state,writes_workspace,worker_instance_id,worker_socket,deadline_at_ms) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
+    ).run(
+      aid,
+      task.id,
+      row.id,
+      role,
+      task.generation,
+      "fake",
+      canonical({ ...selected, profileId: profileName }),
+      "created",
+      role === "implement" ? 1 : 0,
+      instance,
+      workerSocket,
+      deadline,
+    );
+    if (role === "implement")
+      db.prepare("INSERT INTO leases VALUES(?,?,?,?,?,?,?)").run(
+        "writer:" + row.id,
+        aid,
+        instance,
+        1,
+        now,
+        now + 30000,
+        "held",
+      );
+    const sourceContext = await contextFor(task, row.base_sha);
+    atomicWrite(
+      join(dir, "packet.json"),
+      canonical({
+        ...object(packet),
+        hostContext: sourceContext.context,
+        hostInstructions: sourceContext.instructions,
+      }),
+    );
+    atomicWrite(
+      join(dir, "ticket.json"),
+      canonical({
+        attemptId: aid,
+        workerInstanceId: instance,
+        taskId: task.id,
+        nonce: randomBytes(32).toString("hex"),
+        workerSocket,
+        cwd: row.path,
+        driver: "fake",
+        fixture: true,
+        role,
+        packetPath: join(dir, "packet.json"),
+        maxLogBytes: 33554432,
+        deadlineAtMs: deadline,
+      }),
+    );
+    db.prepare(
+      "UPDATE attempts SET state='starting',started_at_ms=? WHERE id=?",
+    ).run(now, aid);
+    const child = spawn(
+      process.execPath,
+      [
+        fileURLToPath(new URL("../worker/main.js", import.meta.url)),
+        "--ticket",
+        join(dir, "ticket.json"),
+      ],
+      { detached: true, stdio: "ignore", env: childEnvironment(dir), cwd: dir },
+    );
+    mark(
+      child.pid !== undefined,
+      "WORKER_START_FAILED",
+      "workerを起動できませんでした",
+    );
+    processes.set(aid, child);
+    db.prepare("UPDATE attempts SET process_identity_json=? WHERE id=?").run(
+      canonical({
+        pid: child.pid!,
+        workerInstanceId: instance,
+        startIdentity: processStartIdentity(child.pid!),
+        startedAtMs: now,
+      }),
+      aid,
+    );
+    child.on("error", () => {});
+    child.unref();
+    return aid;
+  }
+  async function readSpool(attempt: AttemptRow): Promise<void> {
+    const path = join(home, "workers", attempt.id, "events.jsonl");
+    if (!existsSync(path)) return;
+    const bytes = readFileSync(path);
+    mark(bytes.length <= 33554432, "LOG_CAPACITY_EXCEEDED", "spool上限です");
+    const last = bytes.lastIndexOf(10);
+    for (const line of bytes
+      .subarray(0, last + 1)
+      .toString("utf8")
+      .split("\n")
+      .filter(Boolean)) {
+      const value = object(
+        unwrap(validateContract("worker-event", unwrap(parseJson(line)))),
+      );
+      const workerEvent = {
+        attemptId: text(value.attemptId),
+        workerInstanceId: text(value.workerInstanceId),
+        sourceSeq: number(value.sourceSeq),
+        occurredAtMs: number(value.occurredAtMs),
+        type: text(value.type),
+        data: object(value.data),
+      };
+      unwrap(validateWorkerEventData(workerEvent.type, workerEvent.data));
+      if (workerEvent.type === "worker.ready") {
+        const identity = record(attempt.process_identity_json ?? "{}");
+        mark(
+          workerEvent.data.pid === identity.pid &&
+            workerEvent.data.startIdentity === identity.startIdentity &&
+            workerEvent.data.workerSocket === attempt.worker_socket,
+          "WORKER_IDENTITY_MISMATCH",
+          "worker.readyが予約identityと一致しません",
+        );
+      }
+      unwrap(
+        store.acceptWorkerEvent(workerEvent, (e) => {
+          if (e.type === "worker.ready") {
+            db.prepare("UPDATE attempts SET state='running' WHERE id=?").run(
+              attempt.id,
+            );
+            if (
+              attempt.role === "implement" &&
+              getTask(attempt.task_id).state === "allocating"
+            )
+              transition(attempt.task_id, "WORKER_READY", {
+                checkoutMatches: true,
+                leaseMatches: true,
+                workerMatches: true,
+                sandboxVerified: false,
+                fixtureMode: readConfig(home).devFixtures,
+                knownFixture: knownFixture(
+                  getRepo(getTask(attempt.task_id).repo_id),
+                ),
+                simulated: true,
+              });
+          }
+        }),
+      );
+    }
+  }
+  async function finishWorker(attempt: AttemptRow): Promise<boolean> {
+    await readSpool(attempt);
+    const identity = attempt.process_identity_json
+      ? record(attempt.process_identity_json)
+      : null;
+    mark(
+      identity !== null,
+      "PROCESS_IDENTITY_UNKNOWN",
+      "worker identityがありません",
+    );
+    const child = processes.get(attempt.id),
+      pid = number(identity!.pid);
+    if (
+      child
+        ? child.exitCode === null && child.signalCode === null
+        : processStartIdentity(pid) === text(identity!.startIdentity)
+    ) {
+      if (!child) {
+        try {
+          await controlWorker(home, attempt, "status");
+        } catch (error) {
+          if (processStartIdentity(pid) === text(identity!.startIdentity))
+            throw error;
+          return finishWorker(attempt);
+        }
+      }
+      if (Date.now() > attempt.deadline_at_ms) {
+        await controlWorker(home, attempt, "cancel");
+        throw {
+          code: "EXECUTION_UNCERTAIN",
+          message: "deadlineを超えたworkerの停止確認が必要です",
+        };
+      }
+      return false;
+    }
+    const rows = db
+      .prepare(
+        "SELECT type,payload_json FROM events WHERE attempt_id=? ORDER BY source_seq",
+      )
+      .all(attempt.id) as { type: string; payload_json: string }[];
+    const completed = rows.find((e) => e.type === "run.completed");
+    if (attempt.state === "stopping") {
+      db.prepare(
+        "UPDATE attempts SET state='cancelled',ended_at_ms=? WHERE id=?",
+      ).run(Date.now(), attempt.id);
+      db.prepare(
+        "UPDATE leases SET status='released' WHERE owner_attempt_id=?",
+      ).run(attempt.id);
+      return true;
+    }
+    const success =
+      !!completed &&
+      !rows.some((e) => e.type === "run.failed" || e.type === "run.cancelled");
+    mark(success, "EXECUTION_FAILED", "workerが正常完了していません");
+    const completion = record(completed!.payload_json);
+    const data = object(completion.data ?? completion);
+    mark(
+      data.finishReason === "completed" && data.processQuiescent === true,
+      "EXECUTION_UNCERTAIN",
+      "workerの完了証拠が不足しています",
+    );
+    mark(
+      data.outputDigest ===
+        bytesDigest(
+          readFileSync(join(home, "workers", attempt.id, "output.json")),
+        ),
+      "ARTIFACT_CORRUPT",
+      "worker出力digestが一致しません",
+    );
+    db.prepare(
+      "UPDATE attempts SET state='completed',ended_at_ms=? WHERE id=?",
+    ).run(Date.now(), attempt.id);
+    db.prepare(
+      "UPDATE leases SET status='released' WHERE owner_attempt_id=?",
+    ).run(attempt.id);
+    return true;
+  }
+  async function waitWorker(aid: string): Promise<AttemptRow> {
+    for (;;) {
+      const attempt = db
+        .prepare("SELECT * FROM attempts WHERE id=?")
+        .get(aid) as AttemptRow;
+      mark(
+        Date.now() < attempt.deadline_at_ms,
+        "EXECUTION_UNCERTAIN",
+        "worker deadlineを超えました",
+      );
+      if (await finishWorker(attempt)) return attempt;
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+  }
   async function dispatchBody(method:string,p:ObjectValue,actor:Actor,commandId:string):Promise<Json> {
 const config = readConfig(home),
       boards = createBoardService(store, artifacts, config),
