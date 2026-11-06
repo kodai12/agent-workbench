@@ -1,0 +1,74 @@
+import type { Digest, Json } from "../../contracts/ports.js";
+export type RepoRow = {
+  id: string;
+  name: string;
+  source_path: string;
+  managed_git_dir: string;
+  source_base_ref: string;
+  source_base_sha: string;
+  integration_ref: string;
+  integration_sha: string;
+  object_format: "sha1" | "sha256";
+  policy_digest: Digest;
+  version: number;
+};
+export type TaskRow = {
+  id: string;
+  repo_id: string;
+  title: string;
+  state: string;
+  generation: number;
+  version: number;
+  spec_json: string;
+  spec_digest: Digest;
+  policy_digest: Digest;
+  active_candidate_id: string | null;
+  blocked_json: string | null;
+  created_at_ms: number;
+  updated_at_ms: number;
+};
+export type AttemptRow = {
+  id: string;
+  task_id: string;
+  workspace_id: string;
+  role: string;
+  generation: number;
+  driver: string;
+  state: string;
+  writes_workspace: number;
+  worker_instance_id: string;
+  worker_socket: string | null;
+  process_identity_json: string | null;
+  profile_json: string;
+  deadline_at_ms: number;
+};
+export type WorkspaceRow = {
+  id: string;
+  repo_id: string;
+  task_id: string;
+  role: "writer" | "check" | "review" | "board" | "experiment";
+  path: string;
+  branch_ref: string | null;
+  base_sha: string;
+  state: string;
+};
+export type CandidateRow = {
+  id: string;
+  task_id: string;
+  generation: number;
+  identity_json: string;
+  identity_digest: Digest;
+  base_sha: string;
+  candidate_sha: string;
+  tree_sha: string;
+  check_plan_digest: Digest;
+  manifest_digest: Digest;
+  state: string;
+};
+export type CommandRequest = {
+  schemaVersion: 1;
+  requestId: string;
+  method: string;
+  expectedVersion: number | null;
+  params: { [key: string]: Json };
+};
