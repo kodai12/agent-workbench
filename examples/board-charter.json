@@ -1,0 +1,33 @@
+{
+  "schemaVersion": 1,
+  "question": "fixtureの加算仕様をどのテストで固定するか。",
+  "shape": "decide",
+  "decisionUse": "追加テストの選択",
+  "contextArtifacts": [
+    "sha256:1111111111111111111111111111111111111111111111111111111111111111"
+  ],
+  "seats": [
+    {
+      "seatId": "alpha",
+      "profile": "fake-review-a"
+    },
+    {
+      "seatId": "beta",
+      "profile": "fake-review-b"
+    }
+  ],
+  "minimumTrainingFamilies": 1,
+  "minimumRounds": 2,
+  "maximumRounds": 5,
+  "roundDeadlineSeconds": 300,
+  "maxOutputTokensPerSeatRound": 4000,
+  "maxTotalOutputTokens": 60000,
+  "failurePolicy": "stop",
+  "factChecks": [
+    {
+      "id": "unit-evidence",
+      "checkId": "unit"
+    }
+  ],
+  "isolation": "cooperative-local"
+}

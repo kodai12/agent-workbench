@@ -1,0 +1,149 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://agent-workbench.invalid/contracts/board-charter.schema.json",
+  "type": "object",
+  "properties": {
+    "schemaVersion": {
+      "const": 1
+    },
+    "question": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 12000
+    },
+    "shape": {
+      "type": "string",
+      "enum": [
+        "ideas",
+        "decide",
+        "diagnose",
+        "estimate"
+      ]
+    },
+    "decisionUse": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 8000
+    },
+    "contextArtifacts": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "pattern": "^sha256:[0-9a-f]{64}$"
+      },
+      "minItems": 1,
+      "maxItems": 1000
+    },
+    "seats": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "seatId": {
+            "type": "string",
+            "pattern": "^[a-z][a-z0-9-]{0,30}$"
+          },
+          "profile": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 80
+          }
+        },
+        "required": [
+          "seatId",
+          "profile"
+        ],
+        "additionalProperties": false
+      },
+      "minItems": 2,
+      "maxItems": 5
+    },
+    "minimumTrainingFamilies": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 5
+    },
+    "minimumRounds": {
+      "type": "integer",
+      "minimum": 2,
+      "maximum": 5
+    },
+    "maximumRounds": {
+      "type": "integer",
+      "minimum": 2,
+      "maximum": 5
+    },
+    "roundDeadlineSeconds": {
+      "type": "integer",
+      "minimum": 60,
+      "maximum": 7200
+    },
+    "maxOutputTokensPerSeatRound": {
+      "type": "integer",
+      "minimum": 1000,
+      "maximum": 20000
+    },
+    "maxTotalOutputTokens": {
+      "type": "integer",
+      "minimum": 10000,
+      "maximum": 1000000
+    },
+    "failurePolicy": {
+      "type": "string",
+      "enum": [
+        "stop",
+        "continue-with-two"
+      ]
+    },
+    "factChecks": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 80
+          },
+          "checkId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 80
+          }
+        },
+        "required": [
+          "id",
+          "checkId"
+        ],
+        "additionalProperties": false
+      },
+      "minItems": 0,
+      "maxItems": 50
+    },
+    "isolation": {
+      "type": "string",
+      "enum": [
+        "sandbox-verified",
+        "cooperative-local"
+      ]
+    }
+  },
+  "required": [
+    "schemaVersion",
+    "question",
+    "shape",
+    "decisionUse",
+    "contextArtifacts",
+    "seats",
+    "minimumTrainingFamilies",
+    "minimumRounds",
+    "maximumRounds",
+    "roundDeadlineSeconds",
+    "maxOutputTokensPerSeatRound",
+    "maxTotalOutputTokens",
+    "failurePolicy",
+    "factChecks",
+    "isolation"
+  ],
+  "additionalProperties": false
+}
