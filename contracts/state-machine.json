@@ -1,0 +1,258 @@
+{
+  "schemaVersion": 1,
+  "taskStates": [
+    "draft",
+    "ready",
+    "allocating",
+    "running",
+    "waiting_human",
+    "freezing",
+    "verifying",
+    "reviewing",
+    "changes_required",
+    "awaiting_approval",
+    "integrating",
+    "integrated",
+    "cancelled",
+    "failed",
+    "recovery_required"
+  ],
+  "runStates": [
+    "created",
+    "starting",
+    "running",
+    "waiting_input",
+    "stopping",
+    "completed",
+    "failed",
+    "cancelled",
+    "unknown"
+  ],
+  "terminalTaskStates": [
+    "integrated",
+    "cancelled"
+  ],
+  "transitions": [
+    {
+      "from": "draft",
+      "event": "TASK_SUBMITTED",
+      "to": "ready"
+    },
+    {
+      "from": "ready",
+      "event": "START_REQUESTED",
+      "to": "allocating"
+    },
+    {
+      "from": "allocating",
+      "event": "WORKER_READY",
+      "to": "running"
+    },
+    {
+      "from": "running",
+      "event": "INPUT_REQUIRED",
+      "to": "waiting_human"
+    },
+    {
+      "from": "waiting_human",
+      "event": "HUMAN_REPLY",
+      "to": "running"
+    },
+    {
+      "from": "running",
+      "event": "IMPLEMENTATION_RETURNED",
+      "to": "freezing"
+    },
+    {
+      "from": "running",
+      "event": "NATIVE_FINISH_REQUESTED",
+      "to": "freezing"
+    },
+    {
+      "from": "freezing",
+      "event": "CANDIDATE_FROZEN",
+      "to": "verifying"
+    },
+    {
+      "from": "verifying",
+      "event": "CHECKS_PASSED",
+      "to": "reviewing"
+    },
+    {
+      "from": "verifying",
+      "event": "CHECKS_FAILED",
+      "to": "changes_required"
+    },
+    {
+      "from": "reviewing",
+      "event": "REVIEWS_PASSED",
+      "to": "awaiting_approval"
+    },
+    {
+      "from": "reviewing",
+      "event": "REVIEWS_FAILED",
+      "to": "changes_required"
+    },
+    {
+      "from": "awaiting_approval",
+      "event": "INTEGRATION_AUTHORIZED",
+      "to": "integrating"
+    },
+    {
+      "from": "integrating",
+      "event": "INTEGRATION_CONFIRMED",
+      "to": "integrated"
+    },
+    {
+      "from": "awaiting_approval",
+      "event": "CANDIDATE_INVALIDATED",
+      "to": "changes_required"
+    },
+    {
+      "from": "integrating",
+      "event": "BASE_MOVED",
+      "to": "changes_required"
+    },
+    {
+      "from": "changes_required",
+      "event": "REVISION_REQUESTED",
+      "to": "ready"
+    },
+    {
+      "from": "failed",
+      "event": "RETRY_AUTHORIZED",
+      "to": "ready"
+    },
+    {
+      "from": "recovery_required",
+      "event": "RECOVERY_RETRY_AUTHORIZED",
+      "to": "ready"
+    },
+    {
+      "from": "allocating",
+      "event": "EXECUTION_UNCERTAIN",
+      "to": "recovery_required"
+    },
+    {
+      "from": "running",
+      "event": "EXECUTION_UNCERTAIN",
+      "to": "recovery_required"
+    },
+    {
+      "from": "waiting_human",
+      "event": "EXECUTION_UNCERTAIN",
+      "to": "recovery_required"
+    },
+    {
+      "from": "freezing",
+      "event": "EXECUTION_UNCERTAIN",
+      "to": "recovery_required"
+    },
+    {
+      "from": "verifying",
+      "event": "EXECUTION_UNCERTAIN",
+      "to": "recovery_required"
+    },
+    {
+      "from": "reviewing",
+      "event": "EXECUTION_UNCERTAIN",
+      "to": "recovery_required"
+    },
+    {
+      "from": "integrating",
+      "event": "EXECUTION_UNCERTAIN",
+      "to": "recovery_required"
+    },
+    {
+      "from": "allocating",
+      "event": "EXECUTION_FAILED",
+      "to": "failed"
+    },
+    {
+      "from": "running",
+      "event": "EXECUTION_FAILED",
+      "to": "failed"
+    },
+    {
+      "from": "waiting_human",
+      "event": "EXECUTION_FAILED",
+      "to": "failed"
+    },
+    {
+      "from": "freezing",
+      "event": "EXECUTION_FAILED",
+      "to": "failed"
+    },
+    {
+      "from": "verifying",
+      "event": "EXECUTION_FAILED",
+      "to": "failed"
+    },
+    {
+      "from": "reviewing",
+      "event": "EXECUTION_FAILED",
+      "to": "failed"
+    },
+    {
+      "from": "draft",
+      "event": "CANCEL_CONFIRMED",
+      "to": "cancelled"
+    },
+    {
+      "from": "ready",
+      "event": "CANCEL_CONFIRMED",
+      "to": "cancelled"
+    },
+    {
+      "from": "changes_required",
+      "event": "CANCEL_CONFIRMED",
+      "to": "cancelled"
+    },
+    {
+      "from": "awaiting_approval",
+      "event": "CANCEL_CONFIRMED",
+      "to": "cancelled"
+    },
+    {
+      "from": "failed",
+      "event": "CANCEL_CONFIRMED",
+      "to": "cancelled"
+    },
+    {
+      "from": "allocating",
+      "event": "CANCEL_QUIESCENT",
+      "to": "cancelled"
+    },
+    {
+      "from": "running",
+      "event": "CANCEL_QUIESCENT",
+      "to": "cancelled"
+    },
+    {
+      "from": "waiting_human",
+      "event": "CANCEL_QUIESCENT",
+      "to": "cancelled"
+    },
+    {
+      "from": "freezing",
+      "event": "CANCEL_QUIESCENT",
+      "to": "cancelled"
+    },
+    {
+      "from": "verifying",
+      "event": "CANCEL_QUIESCENT",
+      "to": "cancelled"
+    },
+    {
+      "from": "reviewing",
+      "event": "CANCEL_QUIESCENT",
+      "to": "cancelled"
+    },
+    {
+      "from": "recovery_required",
+      "event": "CANCEL_QUIESCENT",
+      "to": "cancelled"
+    }
+  ],
+  "notes": "Guards in spec/01-state-and-storage.md are mandatory. A row alone does not authorize a transition."
+}

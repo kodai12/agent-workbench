@@ -1,0 +1,9 @@
+{
+  "driver": "fake",
+  "providerId": "fake",
+  "trainingFamily": "simulation",
+  "modelId": "fake-v1",
+  "reasoningEffort": null,
+  "maxOutputTokens": 4000,
+  "contextBytesLimit": 524288
+}
